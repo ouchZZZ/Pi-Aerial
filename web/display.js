@@ -20,7 +20,7 @@ function changeVideo(){
   const candidates=videos.map((v,i)=>({v,i})).filter(x=>(rejectedUntil.get(x.v.id||x.v.url)||0)<now);
   if(!candidates.length){
     video.pause();video.classList.remove('ready');video.removeAttribute('src');video.load();
-    $('clipName').textContent=videos.length?'НЕ УДАЛОСЬ ПОЛУЧИТЬ ВИДЕО · ПОВТОР ЧЕРЕЗ 60 С':'НЕТ ВИДЕО · ВКЛЮЧИТЕ ИСТОЧНИКИ';
+    $('clipName').textContent=videos.length?'НЕ УДАЛОСЬ ПОЛУЧИТЬ ВИДЕО · ПОВТОР ЧЕРЕЗ 60 С':(state?.settings?.online_sources?.apple?'ПОДГОТОВКА APPLE AERIAL · ЗАГРУЗКА В КЕШ':'НЕТ ВИДЕО · ВКЛЮЧИТЕ ИСТОЧНИКИ');
     $('videoIndex').textContent='';
     changeTimer=setTimeout(()=>{rejectedUntil.clear();changeVideo();},60000);
     return;
