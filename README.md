@@ -128,7 +128,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest -q
-bash -n install.sh tools/system_deps.sh
+bash -n install.sh && bash -n tools/system_deps.sh
 python -m compileall -q app tools
 ```
 
