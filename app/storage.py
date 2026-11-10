@@ -150,7 +150,11 @@ def update_settings(new: dict) -> dict:
         if not isinstance(layout, dict) or (layout and set(layout) != block_names):
             raise ValueError('Неверный набор блоков OSD')
         for block, geometry in layout.items():
-            if not isinstance(geometry, dict) or set(geometry) != {'x', 'y', 'scale'}:
+            required = {'x', 'y', 'scale'}
+            allowed_geometry = required | {'font', 'color'}
+            if (not isinstance(geometry, dict)
+                    or not required.issubset(geometry)
+                    or set(geometry) - allowed_geometry):
                 raise ValueError(f'Неверное расположение блока {block}')
             for name, low, high in (('x', 0, 100), ('y', 0, 100),
                                     ('scale', 0.4, 2.5)):
@@ -158,6 +162,17 @@ def update_settings(new: dict) -> dict:
                 if (type(value) not in (int, float) or not math.isfinite(value)
                         or not low <= value <= high):
                     raise ValueError(f'Недопустимое значение {block}.{name}')
+            # Font keys are resolved through a fixed mapping in the display.
+            if ('font' in geometry
+                    and (type(geometry['font']) is not str
+                         or geometry['font'] not in {
+                             'default', 'arial', 'verdana', 'trebuchet',
+                             'georgia', 'times', 'courier'})):
+                raise ValueError(f'Недопустимый шрифт блока {block}')
+            if ('color' in geometry
+                    and (type(geometry['color']) is not str
+                         or not re.fullmatch(r'#[0-9a-fA-F]{6}', geometry['color']))):
+                raise ValueError(f'Недопустимый цвет текста блока {block}')
     with LOCK:
         atomic_json(DATA / 'settings.json', result)
     return result
