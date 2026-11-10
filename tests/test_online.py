@@ -87,6 +87,7 @@ def test_catalog_respects_metadata_ttl(monkeypatch, tmp_path):
                         "Ocean", "Apple Aerial", "https://www.apple.com/tv/")
     monkeypatch.setattr(online, "CATALOG_FILE", path)
     monkeypatch.setattr(online, "FETCHERS", {"apple": lambda: calls.append(1) or [clip]})
+    monkeypatch.setattr(online, "warm_cache", lambda: None)
     monkeypatch.setattr(online, "settings", lambda: {"online_sources": {"apple": True}})
     online.refresh_catalog()
     online.refresh_catalog()
@@ -140,6 +141,7 @@ def test_force_refresh_apple_but_not_commercial_api(monkeypatch, tmp_path):
     monkeypatch.setattr(online, 'FETCHERS', {
         'apple': make_fetch('apple'), 'pixabay': make_fetch('pixabay')
     })
+    monkeypatch.setattr(online, "warm_cache", lambda: None)
     monkeypatch.setattr(online, 'settings', lambda: {
         'online_sources': {'apple': True, 'pixabay': True}
     })
@@ -272,13 +274,11 @@ def test_apple_mov_cache_remux_uses_stream_copy(monkeypatch, tmp_path):
     monkeypatch.setattr(online.urllib.request, "build_opener",
                         lambda *args: FakeOpener())
     recorded = []
-
-    def fake_ffmpeg(args, **kwargs):
-        recorded.append(args)
-        from pathlib import Path
-        Path(args[-1]).write_bytes(b"\x00\x00\x00\x18ftypisom" + b"M" * 2500)
-
-    monkeypatch.setattr(online.subprocess, "run", fake_ffmpeg)
+    def fake_normalize(source, output):
+        recorded.append(str(source))
+        output.write_bytes(bytes.fromhex("000000186674797069736f6d") + b"M" * 2500)
+        return "copy"
+    monkeypatch.setattr(online, "normalize_video", fake_normalize)
     clip = online._clip(
         "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
         "Ocean", "Apple", "https://www.apple.com/"
@@ -288,7 +288,8 @@ def test_apple_mov_cache_remux_uses_stream_copy(monkeypatch, tmp_path):
     path = tmp_path / (clip["id"] + ".mp4")
     assert path.is_file()
     assert path.read_bytes()[8:12] == b"isom"
-    assert recorded and "-c:v" in recorded[0] and "copy" in recorded[0]
+    assert (tmp_path / (clip["id"] + ".ready")).read_text() == online.CACHE_PROFILE
+    assert recorded
 
 
 def test_nasa_http_manifest_links_are_upgraded(monkeypatch):
@@ -324,6 +325,7 @@ def test_mov_not_advertised_until_real_mp4_cache_ready(monkeypatch, tmp_path):
     (online.CACHE_FOLDER / (clip["id"] + ".mp4")).write_bytes(
         bytes.fromhex("000000186674797069736f6d") + b"0" * 1500
     )
+    (online.CACHE_FOLDER / (clip["id"] + ".ready")).write_text(online.CACHE_PROFILE)
     clips = online.list_clips()
     assert len(clips) == 1 and clips[0]["cached"] is True
     assert online.source_status()[0]["playable"] == 1
