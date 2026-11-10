@@ -18,8 +18,8 @@ def test_fontconfig_lists_unique_sorted_primary_families(monkeypatch):
     def fake_run(args, **kwargs):
         calls.append((args, kwargs))
         return SimpleNamespace(returncode=0, stdout=(
-            'Noto Sans\\nDejaVu Serif\\nNoto Sans\\n'
-            'Liberation Mono\\nBad\\x01Font\\n\\n'
+            'Noto Sans\nDejaVu Serif\nNoto Sans\n'
+            'Liberation Mono\nBad\x01Font\n\n'
         ))
 
     monkeypatch.setattr(osd_fonts.subprocess, 'run', fake_run)
@@ -54,8 +54,8 @@ def test_dynamic_font_names_allow_unicode_and_reject_control_characters():
     assert osd_fonts.valid_font_choice('installed:Русский шрифт')
     assert osd_fonts.valid_font_choice('georgia')
     for invalid in (
-        'installed:', 'installed:  font', 'installed:font\\nname',
-        'installed:font\\x00name', 'installed:' + 'x' * 161,
+        'installed:', 'installed:  font', 'installed:font\nname',
+        'installed:font\x00name', 'installed:' + 'x' * 161,
         'not-in-list', False, [], None,
     ):
         assert not osd_fonts.valid_font_choice(invalid)
