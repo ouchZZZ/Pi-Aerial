@@ -67,7 +67,7 @@ Description=Safe Pi Aerial release installer and rollback helper
 [Service]
 Type=oneshot
 Environment=PI_AERIAL_BASE=$BASE
-ExecStart=/usr/bin/python3 $BASE/update_helper.py
+ExecStart=$BASE/current/.venv/bin/python $BASE/update_helper.py
 TimeoutStartSec=600
 SERVICE
 cat > "$HOME/.config/systemd/user/pi-aerial-updater.path" <<SERVICE
