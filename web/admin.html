@@ -38,15 +38,18 @@
         <option value="georgia">Georgia</option>
         <option value="times">Times New Roman</option>
         <option value="courier">Courier New</option>
+        <optgroup label="Установлены на Raspberry Pi" id="layoutInstalledFonts"></optgroup>
       </select>
     </label>
+    <button type="button" id="layoutFontsRefresh">Обновить список шрифтов</button>
+    <small id="layoutFontsStatus" role="status" aria-live="polite">Список шрифтов загружается с Raspberry Pi.</small>
     <label for="layoutTextColor">Цвет текста
       <input id="layoutTextColor" type="color" value="#ffffff">
     </label>
     <span id="layoutColorValue" class="layout-color-value">По умолчанию</span>
     <button id="layoutColorReset" type="button">Сбросить цвет</button>
   </div>
-  <p class="hint layout-style-hint">Шрифт и цвет задаются отдельно для каждого блока и положения. Изменения сразу видны в предпросмотре.</p>
+  <p class="hint layout-style-hint">Шрифты берутся из системы Raspberry Pi. В браузере другого устройства предпросмотр шрифта может отличаться от телевизора. Цвет и положение показываются сразу.</p>
   <div class="layout-grid-controls">
     <label class="layout-grid-toggle"><input id="layoutSnapGrid" type="checkbox" checked> Сетка и привязка к ней</label>
     <span class="hint">Шаг сетки: 40 px на макете 1280 × 720. Отключите для свободного перемещения.</span>
