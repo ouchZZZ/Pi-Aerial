@@ -26,12 +26,16 @@ DEFAULTS = {
     'night_mode': True, 'night_start': 23, 'night_end': 7,
     'night_opacity': 0.45, 'clock_shift': True,
     'enabled_modules': {},
+    'online_sources': {'apple': True, 'nasa': True, 'pixabay': False, 'pexels': False},
+    'online_cache_enabled': True,
+    'online_cache_gb': 12,
 }
 
 
 def init_data() -> None:
     for folder in [DATA, DATA / 'videos', DATA / 'modules', DATA / 'module_backups',
-                   DATA / 'trusted_keys', DATA / 'incoming', DATA / 'weather_cache']:
+                   DATA / 'trusted_keys', DATA / 'incoming', DATA / 'weather_cache',
+                   DATA / 'online_cache']:
         folder.mkdir(parents=True, exist_ok=True)
 
 
@@ -76,6 +80,15 @@ def update_settings(new: dict) -> dict:
         ZoneInfo(result['timezone'])
     except (ZoneInfoNotFoundError, TypeError, ValueError):
         raise ValueError('Неизвестный часовой пояс') from None
+    sources = result.get('online_sources')
+    if (not isinstance(sources, dict)
+            or set(sources) != {'apple', 'nasa', 'pixabay', 'pexels'}
+            or any(not isinstance(value, bool) for value in sources.values())):
+        raise ValueError('Неверные переключатели онлайн-источников')
+    if not isinstance(result['online_cache_enabled'], bool):
+        raise ValueError('Неверный режим кеширования')
+    if type(result['online_cache_gb']) is not int or not 1 <= result['online_cache_gb'] <= 64:
+        raise ValueError('Лимит кеша должен быть 1–64 ГБ')
     for key in ('show_clock', 'show_date', 'show_weather', 'night_mode', 'clock_shift'):
         if not isinstance(result[key], bool):
             raise ValueError(f'Параметр {key} должен быть логическим')

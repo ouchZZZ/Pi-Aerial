@@ -13,11 +13,11 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, bundles, weather, github_updates
+from . import auth, bundles, weather, github_updates, online
 from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, atomic_json, init_data,
                       read_json, safe_id, settings, update_settings)
 
@@ -32,9 +32,22 @@ async def lifespan(_: FastAPI):
     STOP.clear()
     worker = threading.Thread(target=weather.polling_loop, args=(STOP,), daemon=True)
     worker.start()
+    online_worker = threading.Thread(target=_online_loop, args=(STOP,), daemon=True)
+    online_worker.start()
     yield
     STOP.set()
     worker.join(timeout=1)
+    online_worker.join(timeout=1)
+
+
+def _online_loop(stop: threading.Event):
+    while not stop.is_set():
+        try:
+            online.refresh_catalog()
+        except Exception as exc:
+            print(f'[online] refresh failed: {exc}', flush=True)
+        if stop.wait(3600):
+            break
 
 
 app = FastAPI(title='Pi Aerial', version=CURRENT_VERSION, lifespan=lifespan,
@@ -84,7 +97,7 @@ def public():
     enabled = cfg.get('enabled_modules', {})
     return {
         'version': CURRENT_VERSION, 'settings': cfg,
-        'weather': weather.current_weather(), 'videos': video_list(),
+        'weather': weather.current_weather(), 'videos': video_list() + online.list_clips(),
         'modules': [m for m in modules if enabled.get(m['id'], True)],
         'reload_counter': read_json(DATA / 'reload.json').get('counter', 0),
     }
@@ -112,6 +125,34 @@ def module_content(module_id: str):
         'Content-Security-Policy': "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'",
         'Cache-Control': 'no-store',
     })
+
+
+
+
+
+@app.get('/media/online/{clip_id}')
+def online_video(clip_id: str):
+    entry = online.lookup(clip_id)
+    if entry is None:
+        raise HTTPException(404, 'Онлайн-ролик недоступен или источник выключен')
+    path = online.cached_file(clip_id)
+    if path:
+        return FileResponse(path, media_type='video/mp4',
+                            headers={'Cache-Control': 'private, max-age=3600'})
+    online.try_cache(entry)
+    return RedirectResponse(entry['remote_url'], status_code=307,
+                            headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/api/admin/online/status')
+def online_status(_: None = Depends(auth.require_admin)):
+    return {'sources': online.source_status(), 'cache_enabled': settings()['online_cache_enabled'],
+            'cache_gb': settings()['online_cache_gb']}
+
+
+@app.post('/api/admin/online/cache/clear')
+def online_clear_cache(_: None = Depends(auth.require_admin)):
+    return {'ok': True, 'deleted': online.clear_cache()}
 
 
 class Login(BaseModel):
@@ -165,7 +206,10 @@ def admin_status(_: None = Depends(auth.require_admin)):
             'storage': {'total': disk.total, 'used': disk.used, 'free': disk.free},
             'trusted_keys': len(list((DATA / 'trusted_keys').glob('*.pem'))),
             'update_pending': (DATA / 'pending_update.json').exists(),
-            'last_update': read_json(DATA / 'update_status.json')}
+            'last_update': read_json(DATA / 'update_status.json'),
+            'online_sources': online.source_status(),
+            'cache': {'enabled': cfg['online_cache_enabled'],
+                      'limit_gb': cfg['online_cache_gb']}}
 
 
 @app.put('/api/admin/config')
@@ -176,6 +220,8 @@ def admin_config(body: ConfigUpdate, _: None = Depends(auth.require_admin)):
         raise HTTPException(422, str(exc)) from exc
     if {'latitude', 'longitude', 'timezone', 'city'} & body.changes.keys():
         threading.Thread(target=_weather_refresh_safely, daemon=True).start()
+    if 'online_sources' in body.changes:
+        threading.Thread(target=online.refresh_catalog, daemon=True).start()
     return {'ok': True, 'config': cfg}
 
 

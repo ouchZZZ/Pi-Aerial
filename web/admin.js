@@ -6,12 +6,36 @@ function bytes(n){if(n>1024**3)return(n/1024**3).toFixed(1)+' ГБ';return(n/102
 async function api(path,{method='GET',body=null,upload=false}={}){const opts={method,credentials:'same-origin',headers:{}};if(method!=='GET')opts.headers['x-csrf-token']=csrf;if(body){if(upload)opts.body=body;else{opts.headers['content-type']='application/json';opts.body=JSON.stringify(body)}}const r=await fetch(path,opts);const data=await r.json().catch(()=>({}));if(!r.ok)throw Error(typeof data.detail==='string'?data.detail:`Ошибка HTTP ${r.status}`);return data;}
 function togglePanel(logged){$('panel').hidden=!logged;$('loginView').hidden=logged;$('logout').hidden=!logged;$('connection').textContent=logged?'Подключено':'Нет входа';}
 async function init(){try{const r=await api('/api/auth/session');csrf=r.csrf;togglePanel(true);await load();}catch{togglePanel(false)}}
-async function load(){status=await api('/api/admin/status');$('version').textContent='v'+status.version;$('countVideos').textContent=status.videos.length;$('freeDisk').textContent=bytes(status.storage.free);$('diskTotal').textContent='Объём '+bytes(status.storage.total);$('moduleCount').textContent=status.modules.length;$('keyCount').textContent=status.trusted_keys;$('updateState').textContent=status.update_pending?'Идёт установка':(status.last_update?.message||'Нет обновлений');renderConfig();renderVideos();renderModules();}
+async function load(){status=await api('/api/admin/status');$('version').textContent='v'+status.version;$('countVideos').textContent=status.videos.length;$('freeDisk').textContent=bytes(status.storage.free);$('diskTotal').textContent='Объём '+bytes(status.storage.total);$('moduleCount').textContent=status.modules.length;$('keyCount').textContent=status.trusted_keys;$('updateState').textContent=status.update_pending?'Идёт установка':(status.last_update?.message||'Нет обновлений');renderConfig();renderVideos();renderModules();renderOnlineSources();}
 function renderConfig(){const f=$('settingsForm'),c=status.config;for(const [key,value] of Object.entries(c)){if(!f.elements[key])continue;if(f.elements[key].type==='checkbox')f.elements[key].checked=!!value;else if(key==='night_opacity')f.elements[key].value=Math.round(value*100);else f.elements[key].value=String(value);}updateNightValue();}
 function updateNightValue(){$('nightValue').textContent=$('settingsForm').elements.night_opacity.value+'%'}
 function textNode(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e;}
 function line(name,desc){const row=document.createElement('div');row.className='line';const t=document.createElement('div');t.append(textNode('strong',name),textNode('small',desc));row.append(t);return row;}
 function renderVideos(){const list=$('videoList');list.replaceChildren();for(const v of status.videos){const row=line(v.name,bytes(v.bytes));const controls=document.createElement('div');controls.className='inline-actions';const remove=textNode('button','Удалить');remove.addEventListener('click',async()=>{if(!confirm('Удалить видео с карты памяти?'))return;try{await api('/api/admin/videos/'+encodeURIComponent(v.name),{method:'DELETE'});await load();toast('Видео удалено')}catch(e){toast(e.message)}});controls.append(remove);row.append(controls);list.append(row);}}
+function renderOnlineSources(){
+  const root=$('onlineSourceList');root.replaceChildren();
+  const config=status.config.online_sources||{};
+  for(const source of status.online_sources||[]){
+    const msg=source.requires_key&&!source.ready?'Нужен API-ключ':(source.error||'Каталог готов');
+    const row=line(source.name,`${source.count} роликов · ${msg}`);
+    const label=document.createElement('label');
+    const check=document.createElement('input');check.type='checkbox';
+    check.checked=!!config[source.id];check.title='Включить источник '+source.name;
+    check.addEventListener('change',async()=>{
+      check.disabled=true;
+      const next={...config,[source.id]:check.checked};
+      try{
+        await api('/api/admin/config',{method:'PUT',body:{changes:{online_sources:next}}});
+        await load();toast('Источник обновлён. Каталог загрузится в фоне.');
+      }catch(e){check.checked=!check.checked;toast(e.message)}
+      finally{check.disabled=false}
+    });
+    label.append(check,document.createTextNode(' Включён'));
+    row.append(label);root.append(row);
+  }
+  $('onlineCacheEnabled').checked=!!status.cache?.enabled;
+  $('onlineCacheLimit').value=Number(status.cache?.limit_gb||12);
+}
 function renderModules(){const list=$('moduleList');list.replaceChildren();for(const m of status.modules){const row=line(m.name||m.id,`${m.id} · v${m.version} · ${m.position||'top-right'}`);const controls=document.createElement('div');controls.className='inline-actions';const check=document.createElement('input');check.type='checkbox';check.checked=m.enabled;check.title='Модуль включён';check.addEventListener('change',async()=>{try{await api('/api/admin/modules/'+m.id+'/enabled',{method:'PUT',body:{enabled:check.checked}});toast('Настройка сохранена')}catch(e){check.checked=!check.checked;toast(e.message)}});controls.append(check);if(m.rollback_available){const back=textNode('button','Откатить');back.addEventListener('click',async()=>{if(!confirm('Вернуть предыдущую версию модуля?'))return;try{await api('/api/admin/modules/'+m.id+'/rollback',{method:'POST'});await load();toast('Модуль откатан')}catch(e){toast(e.message)}});controls.append(back)}row.append(controls);list.append(row);}}
 function setBusy(form,busy){const b=form.querySelector('button');b.disabled=busy;b.dataset.old=b.dataset.old||b.textContent;b.textContent=busy?'Обработка…':b.dataset.old;}
 async function upload(formId,inputId,url){const form=$(formId);const file=$(inputId).files[0];if(!file)return;const data=new FormData();data.append('file',file);setBusy(form,true);try{const res=await api(url,{method:'POST',body:data,upload:true});toast(res.message||'Файл принят');form.reset();await load();}catch(e){toast(e.message)}finally{setBusy(form,false)}}
@@ -22,6 +46,22 @@ $('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const f
 $('settingsForm').elements.night_opacity.addEventListener('input',updateNightValue);
 $('reloadDisplay').addEventListener('click',async()=>{try{await api('/api/admin/display/reload',{method:'POST'});toast('Экран перезагрузится при следующей проверке')}catch(e){toast(e.message)}});
 $('videoForm').addEventListener('submit',e=>{e.preventDefault();upload('videoForm','videoInput','/api/admin/videos')});
+$('onlineCacheSave').addEventListener('click',async()=>{
+  const cache_gb=Number($('onlineCacheLimit').value);
+  if(!Number.isInteger(cache_gb)||cache_gb<1||cache_gb>64){toast('Размер кеша: от 1 до 64 ГБ');return;}
+  try{
+    await api('/api/admin/config',{method:'PUT',body:{changes:{
+      online_cache_enabled:$('onlineCacheEnabled').checked,online_cache_gb:cache_gb
+    }}});
+    await load();toast('Настройки кеша сохранены');
+  }catch(e){toast(e.message)}
+});
+$('onlineCacheClear').addEventListener('click',async()=>{
+  if(!confirm('Удалить сохранённые копии онлайн-роликов? Свои видео останутся.'))return;
+  try{const res=await api('/api/admin/online/cache/clear',{method:'POST'});
+    toast('Удалено файлов кеша: '+res.deleted);await load();
+  }catch(e){toast(e.message)}
+});
 $('moduleForm').addEventListener('submit',e=>{e.preventDefault();upload('moduleForm','moduleInput','/api/admin/modules/install')});
 $('coreForm').addEventListener('submit',e=>{e.preventDefault();upload('coreForm','coreInput','/api/admin/core/install')});
 init();
