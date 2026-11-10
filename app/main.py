@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, bundles, weather, github_updates, online
+from . import auth, bundles, weather, github_updates, online, local_videos
 from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, atomic_json, init_data,
                       read_json, safe_id, settings, update_settings)
 
@@ -35,10 +35,13 @@ async def lifespan(_: FastAPI):
     worker.start()
     online_worker = threading.Thread(target=_online_loop, args=(STOP,), daemon=True)
     online_worker.start()
+    local_video_worker = threading.Thread(target=local_videos.polling_loop, args=(STOP,), daemon=True)
+    local_video_worker.start()
     yield
     STOP.set()
     worker.join(timeout=1)
     online_worker.join(timeout=1)
+    local_video_worker.join(timeout=1)
 
 
 def _online_loop(stop: threading.Event):
@@ -87,7 +90,7 @@ def health():
 def video_list() -> list[dict]:
     result = []
     for path in sorted((DATA / 'videos').iterdir()):
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+        if local_videos.is_ready(path):
             result.append({'name': path.name, 'url': '/media/' + quote(path.name),
                            'bytes': path.stat().st_size})
     return result
@@ -112,9 +115,9 @@ def video_file(filename: str):
     if Path(filename).name != filename or Path(filename).suffix.lower() not in VIDEO_EXTENSIONS:
         raise HTTPException(404)
     path = DATA / 'videos' / filename
-    if not path.is_file() or path.is_symlink():
+    if not local_videos.is_ready(path):
         raise HTTPException(404)
-    return FileResponse(path, media_type='video/mp4' if path.suffix.lower() != '.webm' else 'video/webm',
+    return FileResponse(path, media_type='video/mp4',
                         headers={'Cache-Control': 'public, max-age=86400'})
 
 
@@ -250,6 +253,7 @@ def admin_status(_: None = Depends(auth.require_admin)):
     mods = bundles.list_modules()
     cfg = settings()
     return {'version': CURRENT_VERSION, 'config': cfg, 'videos': video_list(),
+            'video_processing': local_videos.status(),
             'modules': [{**m, 'enabled': cfg.get('enabled_modules', {}).get(m['id'], True),
                          'rollback_available': (DATA / 'modules' / m['id'] / 'previous').is_dir()}
                         for m in mods],
@@ -342,9 +346,8 @@ async def add_video(file: UploadFile = File(...), _: None = Depends(auth.require
         safe_name = re.sub(r'[^0-9A-Za-zА-Яа-яЁё._-]+', '_', original)[:100].strip('._-')
         if not safe_name or not safe_name.lower().endswith(suffix):
             safe_name = 'video' + suffix
-        target = DATA / 'videos' / (secrets.token_hex(4) + '-' + safe_name)
-        os.replace(incoming, target)
-        return {'ok': True, 'name': target.name}
+        return {'ok': True, 'message': 'Видео принято и поставлено в очередь фоновой подготовки',
+                **local_videos.enqueue(incoming, safe_name)}
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     finally:
@@ -357,9 +360,24 @@ def delete_video(filename: str, _: None = Depends(auth.require_admin)):
     if Path(filename).name != filename or Path(filename).suffix.lower() not in VIDEO_EXTENSIONS:
         raise HTTPException(404)
     target = DATA / 'videos' / filename
-    if target.is_symlink() or not target.is_file():
+    if target.is_symlink() or not local_videos.is_ready(target):
         raise HTTPException(404)
     target.unlink()
+    local_videos.remove_ready(target)
+    return {'ok': True}
+
+
+@app.post('/api/admin/videos/jobs/{job_id}/retry')
+def retry_video_job(job_id: str, _: None = Depends(auth.require_admin)):
+    if not re.fullmatch(r'[0-9a-f]{16}', job_id) or not local_videos.retry(job_id):
+        raise HTTPException(409, 'Задание не найдено или не ожидает повторения')
+    return {'ok': True}
+
+
+@app.delete('/api/admin/videos/jobs/{job_id}')
+def delete_video_job(job_id: str, _: None = Depends(auth.require_admin)):
+    if not re.fullmatch(r'[0-9a-f]{16}', job_id) or not local_videos.delete_job(job_id):
+        raise HTTPException(409, 'Задание не найдено или выполняется')
     return {'ok': True}
 
 
