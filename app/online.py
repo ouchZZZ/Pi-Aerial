@@ -47,6 +47,7 @@ DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 ACTIVE: set[str] = set()
 CACHE_FAILED_UNTIL: dict[str, float] = {}
 APPLE_WARM_TARGET = 4
+CACHE_PROFILE = "h264-1080p30-8bit-v1"
 
 
 def allowed_video_url(url: str, provider: str) -> bool:
@@ -443,18 +444,20 @@ def lookup(clip_id: str) -> dict | None:
 
 
 def cached_file(clip_id: str) -> Path | None:
-    path = CACHE_FOLDER / (clip_id + ".mp4")
-    if path.is_file() and not path.is_symlink():
-        # Old releases incorrectly stored QuickTime MOV bytes as .mp4.
-        # Invalidate them so the new worker can remux into actual MP4.
-        with path.open("rb") as stream:
-            header = stream.read(12)
-        if header[8:12] == b"qt  ":
-            path.unlink(missing_ok=True)
-            return None
-        return path
-    return None
+    """Only serve files normalized and verified by the current converter.
 
+    v0.3.2 and earlier could store raw QuickTime or unsupported H.264 in .mp4.
+    The ready marker prevents those legacy files from being reused.
+    """
+    path = CACHE_FOLDER / (clip_id + ".mp4")
+    marker = CACHE_FOLDER / (clip_id + ".ready")
+    if path.is_file() and not path.is_symlink():
+        if not marker.is_symlink() and marker.is_file():
+            if marker.read_text(encoding="utf8") == CACHE_PROFILE:
+                return path
+        path.unlink(missing_ok=True)
+        marker.unlink(missing_ok=True)
+    return None
 
 def _prune(max_bytes: int, except_id: str) -> None:
     candidates = sorted((p for p in CACHE_FOLDER.glob("*.mp4") if p.is_file()
@@ -467,6 +470,7 @@ def _prune(max_bytes: int, except_id: str) -> None:
             return
         size = file.stat().st_size
         file.unlink(missing_ok=True)
+        file.with_suffix(".ready").unlink(missing_ok=True)
         total -= size
 
 
@@ -483,7 +487,7 @@ def _cache_worker(entry: dict) -> None:
         temp = CACHE_FOLDER / (ident + ".part")
         muxed = CACHE_FOLDER / (ident + ".mux.mp4")
         final = CACHE_FOLDER / (ident + ".mp4")
-        if final.exists():
+        if cached_file(ident) is not None:
             return
         # Remove incomplete files left by a crashed older download.
         temp.unlink(missing_ok=True)
@@ -521,6 +525,7 @@ def _cache_worker(entry: dict) -> None:
                   f"({total // 1024 // 1024} МБ исходник)", flush=True)
             mode = normalize_video(temp, muxed)
             os.replace(muxed, final)
+            (CACHE_FOLDER / (ident + ".ready")).write_text(CACHE_PROFILE, encoding="utf8")
             print(f"[online] ready {provider}: {ident} "
                   f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
             _prune(max_bytes, ident)
@@ -584,5 +589,6 @@ def clear_cache() -> int:
     for file in CACHE_FOLDER.glob("*.mp4"):
         if file.is_file() and not file.is_symlink() and file.stem not in ACTIVE:
             file.unlink()
+            file.with_suffix(".ready").unlink(missing_ok=True)
             count += 1
     return count
