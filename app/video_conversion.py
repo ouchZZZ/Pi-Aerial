@@ -162,21 +162,22 @@ def _run_with_progress(command: list[str], timeout: int,
 
 
 def normalize_video(source: Path, output: Path, max_bytes: int = MAX_BYTES,
-                    on_progress=None) -> str:
+                    on_progress=None, *, force_transcode: bool = False) -> str:
     """Serialize all video work, reporting time spent waiting for the slot."""
     _emit(on_progress, stage="waiting")
     with CONVERSION_SLOT:
-        return _normalize_video_locked(source, output, max_bytes, on_progress)
+        return _normalize_video_locked(source, output, max_bytes, on_progress,
+                                       force_transcode=force_transcode)
 
 
 def _normalize_video_locked(source: Path, output: Path, max_bytes: int,
-                            on_progress=None) -> str:
+                            on_progress=None, *, force_transcode=False) -> str:
     """Create complete faststart MP4; return 'copy' or 'transcode'."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise ValueError("ffmpeg не установлен: sudo apt install -y ffmpeg")
     stream = probe_video(source)
-    copy = can_stream_copy(stream)
+    copy = not force_transcode and can_stream_copy(stream)
     common = [
         "nice", "-n", "15", ffmpeg, "-hide_banner", "-loglevel", "error",
         "-nostdin", "-y", "-i", str(source), "-map", "0:v:0", "-an", "-sn", "-dn",
