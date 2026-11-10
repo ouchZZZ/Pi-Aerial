@@ -21,6 +21,7 @@ def test_only_trusted_https_media_hosts():
     assert online.nasa_https_url("http://images-assets.nasa.gov/video/earth~orig.mp4") == "https://images-assets.nasa.gov/video/earth~orig.mp4"
     assert online.nasa_https_url("http://169.254.169.254/latest/meta-data") is None
     assert online.nasa_https_url("http://nasa.gov.evil.test/clip.mp4") is None
+    assert online.nasa_https_url("http://images-assets.nasa.gov/video/file name.mp4") == "https://images-assets.nasa.gov/video/file%20name.mp4"
     assert online.nasa_https_url("https://images-assets.nasa.gov/video/earth.mov") == "https://images-assets.nasa.gov/video/earth.mov"
 
 
