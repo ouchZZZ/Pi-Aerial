@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
 from fractions import Fraction
 from pathlib import Path
 
@@ -17,6 +18,8 @@ MAX_HEIGHT = 1080
 MAX_FPS = 30
 MAX_LEVEL = 42
 MAX_BYTES = 550 * 1024 * 1024
+# One ffmpeg normalization at a time across online and manual uploads.
+CONVERSION_SLOT = threading.BoundedSemaphore(1)
 
 
 def probe_video(source: Path) -> dict:
@@ -65,7 +68,13 @@ def can_stream_copy(stream: dict) -> bool:
     )
 
 
-def normalize_video(source: Path, output: Path) -> str:
+def normalize_video(source: Path, output: Path, max_bytes: int = MAX_BYTES) -> str:
+    """Serialize all local and online normalization jobs to protect Pi 4."""
+    with CONVERSION_SLOT:
+        return _normalize_video_locked(source, output, max_bytes)
+
+
+def _normalize_video_locked(source: Path, output: Path, max_bytes: int) -> str:
     """Create complete faststart MP4; return 'copy' or 'transcode'."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -99,7 +108,7 @@ def normalize_video(source: Path, output: Path) -> str:
         header = result.read(12)
     if header[4:8] != b"ftyp" or header[8:12] == b"qt  ":
         raise ValueError("ffmpeg не создал совместимый MP4")
-    if not 1024 <= output.stat().st_size <= MAX_BYTES:
+    if not 1024 <= output.stat().st_size <= max_bytes:
         raise ValueError("Готовое видео пустое или слишком большое")
     # Verify output itself; copy mode must not silently preserve unsupported codecs.
     verified = probe_video(output)

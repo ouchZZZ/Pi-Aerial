@@ -118,6 +118,7 @@ def test_signed_modules_and_rollback(monkeypatch):
 def test_safe_upload_and_core_queue(monkeypatch):
     monkeypatch.setattr(weather, 'refresh_weather', lambda: {})
     key = setup_key()
+    monkeypatch.setattr(main.local_videos, 'polling_loop', lambda stop: stop.wait(30))
     with TestClient(main.app) as client:
         headers = login_client(client)
         invalid = client.post('/api/admin/videos', files={'file': ('wrong.mp4', b'NOT_A_VIDEO', 'video/mp4')}, headers=headers)
@@ -125,9 +126,13 @@ def test_safe_upload_and_core_queue(monkeypatch):
         fake_mp4 = b'\x00\x00\x00\x18ftypisom' + b'0' * 100
         uploaded = client.post('/api/admin/videos', files={'file': ('test.mp4', fake_mp4, 'video/mp4')}, headers=headers)
         assert uploaded.status_code == 200, uploaded.text
-        name = uploaded.json()['name']
-        assert client.get('/media/'+name).status_code == 200
-        assert client.delete('/api/admin/videos/'+name, headers=headers).status_code == 200
+        job = uploaded.json()
+        assert job['state'] == 'queued'
+        assert any(item['id'] == job['id']
+                   for item in client.get('/api/admin/status').json()['video_processing'])
+        assert not any(item['name'] == job['name']
+                       for item in client.get('/api/public').json()['videos'])
+        assert client.delete('/api/admin/videos/jobs/'+job['id'], headers=headers).status_code == 200
         core = make_bundle(key, 'core', version='0.2.0')
         queued = client.post('/api/admin/core/install', files={'file': ('core.zip', core, 'application/zip')}, headers=headers)
         assert queued.status_code == 200, queued.text
@@ -145,6 +150,7 @@ def test_local_source_toggle_preserves_uploaded_files(monkeypatch):
     name = 'hand_uploaded_test.mp4'
     video = DATA / 'videos' / name
     video.write_bytes(b'\\x00\\x00\\x00\\x18ftypisom' + b'0' * 100)
+    main.local_videos.mark_ready(video)
     try:
         update_settings({'local_videos_enabled': True})
         with TestClient(main.app) as client:
@@ -172,3 +178,4 @@ def test_local_source_toggle_preserves_uploaded_files(monkeypatch):
     finally:
         update_settings({'local_videos_enabled': True})
         video.unlink(missing_ok=True)
+        main.local_videos.remove_ready(video)
