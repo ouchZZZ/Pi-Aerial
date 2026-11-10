@@ -625,7 +625,10 @@ def _cache_worker(entry: dict) -> None:
 
 
 def try_cache(entry: dict) -> None:
-    if not settings().get("online_cache_enabled", True) or cache_status()["paused"]:
+    cfg = settings()
+    if (not cfg.get("online_autodownload_enabled", True)
+            or not cfg.get("online_cache_enabled", True)
+            or cache_status()["paused"]):
         return
     ident = entry["id"]
     with LOCK:
@@ -642,7 +645,8 @@ def try_cache(entry: dict) -> None:
 def warm_cache() -> None:
     """Schedule at most one new video; the next starts after full conversion."""
     cfg = settings()
-    if (not cfg.get("online_cache_enabled", True)
+    if (not cfg.get("online_autodownload_enabled", True)
+            or not cfg.get("online_cache_enabled", True)
             or shutil.which("ffmpeg") is None
             or cache_status()["paused"]):
         return

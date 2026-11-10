@@ -158,6 +158,7 @@ function renderOnlineSources(){
     label.append(check,document.createTextNode(' Включён'));
     row.append(label);root.append(row);
   }
+  $('onlineAutodownload').checked=status.config.online_autodownload_enabled!==false;
   $('onlineCacheEnabled').checked=!!status.cache?.enabled;
   $('onlineCacheLimit').value=Number(status.cache?.limit_gb||12);
   $('onlineCacheLimit').max=Number(status.cache?.max_limit_gb||12);
@@ -166,7 +167,7 @@ function renderOnlineSources(){
   const limit=Number(cache.limit_gb||12);
   const state=!cache.enabled?'Выключена':cache.paused
     ?(cache.pause_reason==='limit'?'Пауза: достигнут лимит кеша':'Пауза: мало свободного места')
-    :'Загрузка разрешена';
+    :status.config.online_autodownload_enabled===false?'Автозагрузка выключена':'Загрузка разрешена';
   $('onlineCacheState').textContent=`Использовано ${used} из ${limit} ГБ · ${state}. Готовые ролики сохраняются.`;
 }
 let libraryLoading=false;
@@ -351,3 +352,18 @@ setInterval(()=>{
     load().then(loadLibrary).catch(e=>console.warn('Список готовых видео:',e));
   }
 },15000);
+
+$('onlineAutodownload').addEventListener('change',async e=>{
+  const check=e.currentTarget;
+  const enabled=check.checked;
+  check.disabled=true;
+  try{
+    await api('/api/admin/config',{method:'PUT',body:{changes:{online_autodownload_enabled:enabled}}});
+  }catch(error){
+    check.checked=!enabled;
+    toast(error.message);
+    return;
+  }finally{check.disabled=false}
+  toast(enabled?'Автозагрузка включена':'Автозагрузка выключена');
+  await load();
+});
