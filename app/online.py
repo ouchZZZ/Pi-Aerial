@@ -499,7 +499,10 @@ def cache_status() -> dict:
     used = _cache_used_bytes()
     free = None
     try:
-        free = shutil.disk_usage(CACHE_FOLDER if CACHE_FOLDER.is_dir() else DATA).free
+        disk_path = CACHE_FOLDER
+        while not disk_path.exists() and disk_path != disk_path.parent:
+            disk_path = disk_path.parent
+        free = shutil.disk_usage(disk_path).free
     except OSError:
         pass
     # Reserve the maximum possible finished MP4; no completed file is deleted.
