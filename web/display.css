@@ -40,7 +40,7 @@
 .forecast-low{color:#c7e6ff}
 @media(max-width:720px){.forecast{grid-template-columns:repeat(4,minmax(0,1fr));row-gap:.45em}}
 
-body.playing-once :is(#shade,#clockCard,#calendarCard,#moduleLayer,#clipFooter){display:none}
+body.playing-once :is(#shade,#clockCard,#weatherCard,#calendarCard,#moduleLayer,#clipFooter){display:none}
 
 /* Weather source attribution; hidden along with the weather OSD. */
 .weather-credit{font-size:clamp(9px,.75vw,13px);font-weight:400;opacity:.75;letter-spacing:0}
