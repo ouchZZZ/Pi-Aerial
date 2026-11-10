@@ -273,6 +273,17 @@ const osdFonts={
   times:'"Times New Roman","Liberation Serif",serif',
   courier:'"Courier New","Liberation Mono",monospace'
 };
+function osdFontStack(selection){
+  if(Object.prototype.hasOwnProperty.call(osdFonts,selection))return osdFonts[selection];
+  if(typeof selection==='string'&&selection.startsWith('installed:')){
+    const family=selection.slice('installed:'.length);
+    if(family&&family.length<=160&&!/[\\x00-\\x1f\\x7f]/.test(family)){
+      // JSON quoting also escapes literal quote/backslash characters for CSS.
+      return JSON.stringify(family)+',sans-serif';
+    }
+  }
+  return '';
+}
 function applyOsdLayout(layout){
   const custom=Boolean(layout&&Object.keys(layout).length);
   document.body.classList[custom?'add':'remove']('custom-osd-layout');
@@ -285,7 +296,7 @@ function applyOsdLayout(layout){
     node.style.bottom=geometry?'auto':'';
     node.style.transform=geometry?'scale('+geometry.scale+')':'';
     const font=geometry?.font;
-    node.style.fontFamily=Object.prototype.hasOwnProperty.call(osdFonts,font)?osdFonts[font]:'';
+    node.style.fontFamily=osdFontStack(font);
     node.style.color=geometry?.color||'';
     // Descendant labels otherwise have hard-coded colors; preserve their
     // existing defaults unless an explicit color is selected for this block.
