@@ -11,6 +11,7 @@ import time
 import urllib.error
 from contextlib import asynccontextmanager
 from pathlib import Path
+from zoneinfo import available_timezones
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -365,6 +366,13 @@ def admin_status(_: None = Depends(auth.require_admin)):
 def admin_video_progress(_: None = Depends(auth.require_admin)):
     """Private, short-lived telemetry. No remote URLs or file paths."""
     return video_progress.snapshot()
+
+
+@app.get('/api/admin/timezones')
+def admin_timezones(_: None = Depends(auth.require_admin)):
+    """IANA zones installed on the device; choices match backend validation."""
+    zones = sorted(available_timezones())
+    return {'timezones': zones or ['UTC', 'Europe/Moscow']}
 
 
 @app.put('/api/admin/config')
