@@ -192,7 +192,7 @@ def online_video(clip_id: str, request: Request):
 @app.get('/api/admin/online/status')
 def online_status(_: None = Depends(auth.require_admin)):
     return {'sources': online.source_status(), 'cache_enabled': settings()['online_cache_enabled'],
-            'cache_gb': settings()['online_cache_gb']}
+            'cache_gb': settings()['online_cache_gb'], 'cache': online.cache_status()}
 
 
 @app.post('/api/admin/online/cache/clear')
@@ -262,7 +262,7 @@ def admin_status(_: None = Depends(auth.require_admin)):
             'last_update': read_json(DATA / 'update_status.json'),
             'online_sources': online.source_status(),
             'cache': {'enabled': cfg['online_cache_enabled'],
-                      'limit_gb': cfg['online_cache_gb']}}
+                      'limit_gb': cfg['online_cache_gb'], **online.cache_status()}}
 
 
 @app.get('/api/admin/videos/progress')
