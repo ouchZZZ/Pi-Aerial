@@ -11,6 +11,8 @@ from pathlib import Path
 from threading import RLock
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .osd_fonts import valid_font_choice
+
 BASE = Path(os.environ.get('PI_AERIAL_BASE', Path(__file__).resolve().parent.parent)).resolve()
 DATA = Path(os.environ.get('PI_AERIAL_DATA_DIR', BASE / 'data')).resolve()
 WEB = Path(__file__).resolve().parent.parent / 'web'
@@ -163,11 +165,7 @@ def update_settings(new: dict) -> dict:
                         or not low <= value <= high):
                     raise ValueError(f'Недопустимое значение {block}.{name}')
             # Font keys are resolved through a fixed mapping in the display.
-            if ('font' in geometry
-                    and (type(geometry['font']) is not str
-                         or geometry['font'] not in {
-                             'default', 'arial', 'verdana', 'trebuchet',
-                             'georgia', 'times', 'courier'})):
+            if ('font' in geometry and not valid_font_choice(geometry['font'])):
                 raise ValueError(f'Недопустимый шрифт блока {block}')
             if ('color' in geometry
                     and (type(geometry['color']) is not str
