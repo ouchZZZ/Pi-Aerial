@@ -95,7 +95,7 @@ function harness(settings={},initialGrid=null){
     node('layoutSnapGrid').dispatch('change',{target:node('layoutSnapGrid')});
   };
   const drag=(name,dx,dy,pointerId=10)=>{
-    const item=node('layoutOverlay').children[Object.keys(screenIds).indexOf(name)];
+    const item=node('layoutOverlay').children[Object.values(screenIds).indexOf(name)];
     const target={classList:{contains:()=>false}};
     item.dispatch('pointerdown',{button:0,pointerId,clientX:0,clientY:0,target,
       preventDefault(){}});
