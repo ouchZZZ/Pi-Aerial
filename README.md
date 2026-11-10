@@ -32,14 +32,16 @@
 
 Это **прогноз совместимости по архитектуре и требованиям Raspberry Pi OS**, а не подтверждённые испытания. Даже на моделях с 64-битной ОС производительность декодирования H.264, интерфейса Chromium и фонового `ffmpeg` зависит от объёма памяти и железа. Для комфортной работы разумно ориентироваться на **Pi 4 или более мощные модели с 2 ГБ ОЗУ и выше**.
 
-Официальный список плат, поддерживаемых Raspberry Pi OS (64-bit): https://www.raspberrypi.com/software/raspberry-pi-desktop/ .
+[Официальный список моделей, поддерживающих Raspberry Pi OS (64-bit)](https://www.raspberrypi.com/software/raspberry-pi-desktop/).
 
 
 > **Права на видео:** ролики Apple и NASA не входят в репозиторий и релизы. Лицензия MIT распространяется только на код. Сведения об условиях использования сторонних материалов см. в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## 1. Установка и первый запуск
 
-Подготовьте Raspberry Pi OS Desktop и включите автологин в графический сеанс. Затем выполните на Raspberry Pi:
+**Шаг 0. Установите Raspberry Pi OS.** Воспользуйтесь [официальной инструкцией Raspberry Pi по установке ОС через Raspberry Pi Imager](https://www.raspberrypi.com/documentation/computers/getting-started.html#install-using-imager). Сам [Raspberry Pi Imager можно скачать здесь](https://www.raspberrypi.com/software/).
+
+В Imager выберите свою модель платы и **Raspberry Pi OS (64-bit) с графическим рабочим столом (Desktop)**, а **не Lite**. Запишите систему на карту памяти или другой поддерживаемый накопитель, настройте пользователя, сеть и при необходимости автовход в рабочий стол. После первой загрузки ОС и подключения к сети откройте терминал Raspberry Pi и выполните:
 
 ~~~bash
 sudo apt update
