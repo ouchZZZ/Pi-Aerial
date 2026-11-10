@@ -28,8 +28,8 @@ def refresh_weather() -> dict:
         params = urllib.parse.urlencode({
             'latitude': cfg['latitude'], 'longitude': cfg['longitude'],
             'current': 'temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day',
-            'daily': 'temperature_2m_max,temperature_2m_min,precipitation_probability_max',
-            'timezone': cfg['timezone'], 'forecast_days': 2,
+            'daily': 'temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code',
+            'timezone': cfg['timezone'], 'forecast_days': 8,
         })
         url = 'https://api.open-meteo.com/v1/forecast?' + params
         request = urllib.request.Request(url, headers={'User-Agent': 'Pi-Aerial/0.1 (local weather display)'})
@@ -48,6 +48,13 @@ def refresh_weather() -> dict:
             'daily_max': daily['temperature_2m_max'][0],
             'daily_min': daily['temperature_2m_min'][0],
             'rain_probability': daily['precipitation_probability_max'][0],
+            'forecast': [
+                {'date': date, 'min': low, 'max': high, 'code': code}
+                for date, low, high, code in zip(
+                    daily.get('time', []), daily['temperature_2m_min'],
+                    daily['temperature_2m_max'], daily.get('weather_code', []),
+                )
+            ],
         }
         atomic_json(CACHE, result)
         return current_weather()
