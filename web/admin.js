@@ -11,6 +11,64 @@ function renderConfig(){const f=$('settingsForm'),c=status.config;for(const [key
 function updateNightValue(){$('nightValue').textContent=$('settingsForm').elements.night_opacity.value+'%'}
 function textNode(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e;}
 function line(name,desc){const row=document.createElement('div');row.className='line';const t=document.createElement('div');t.append(textNode('strong',name),textNode('small',desc));row.append(t);return row;}
+function progressSize(n){
+  const value=Math.max(0,Number(n)||0);
+  if(value<1024*1024)return (value/1024).toFixed(0)+' КБ';
+  if(value<1024**3)return (value/1024**2).toFixed(1)+' МБ';
+  return (value/1024**3).toFixed(2)+' ГБ';
+}
+function progressTime(n){
+  if(n===null||n===undefined||!Number.isFinite(Number(n)))return 'неизвестно';
+  const t=Math.max(0,Math.floor(Number(n)));
+  return String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');
+}
+function renderVideoProgress(data){
+  const root=$('videoProgressList'),recent=$('videoProgressRecent');
+  root.replaceChildren();
+  const stageLabels={
+    starting:'Соединение с сервером',downloading:'Скачивание',
+    waiting:'Ожидание свободного конвертера',converting:'Подготовка MP4',
+    finalizing:'Проверка готового файла'
+  };
+  const active=Array.isArray(data.active)?data.active:[];
+  if(!active.length)root.append(textNode('p','Сейчас загрузка и обработка не выполняются.','hint'));
+  for(const job of active){
+    const item=document.createElement('div');item.className='video-progress-item';
+    const source=job.kind==='local'?'Загруженный файл':(job.provider||'Онлайн');
+    item.append(textNode('strong',source+' · '+job.name));
+    const percent=typeof job.percent==='number'&&Number.isFinite(job.percent)?job.percent:null;
+    let detail=stageLabels[job.stage]||job.stage;
+    if(job.stage==='downloading'){
+      detail+=' · '+progressSize(job.bytes_received);
+      detail+=job.bytes_total?' из '+progressSize(job.bytes_total):' · размер неизвестен';
+      detail+=' · '+progressSize(job.speed_bps)+'/с';
+    }else if(job.stage==='converting'){
+      detail+=' · '+(job.mode==='copy'?'перепаковка без потерь':'H.264, перекодирование');
+      detail+=' · '+progressTime(job.position_s);
+      detail+=job.duration_s?' / '+progressTime(job.duration_s):' · длительность неизвестна';
+      if(job.encode_speed)detail+=' · '+job.encode_speed;
+    }
+    detail+=' · прошло '+progressTime(job.elapsed_s);
+    if(percent!==null)detail+=' · '+percent.toFixed(1)+'%';
+    item.append(textNode('small',detail));
+    const bar=document.createElement('progress');bar.max=100;
+    if(percent!==null)bar.value=Math.min(100,Math.max(0,percent));
+    bar.setAttribute('aria-label',source+': '+(stageLabels[job.stage]||job.stage));
+    item.append(bar);root.append(item);
+  }
+  const done=Array.isArray(data.recent)?data.recent:[];
+  recent.textContent=done.length?
+    'Недавние задания: '+done.map(j=>(j.stage==='ready'?'Готово':'Ошибка')+' · '+j.name).join(' | '):'';
+}
+let videoProgressBusy=false;
+async function refreshVideoProgress(){
+  if(videoProgressBusy)return;
+  videoProgressBusy=true;
+  try{
+    const result=await api('/api/admin/videos/progress');
+    renderVideoProgress(result);
+  }finally{videoProgressBusy=false}
+}
 function renderVideos(){
   const list=$('videoList');list.replaceChildren();
   for(const v of status.videos){
@@ -108,7 +166,7 @@ function setBusy(form,busy){const b=form.querySelector('button');b.disabled=busy
 async function upload(formId,inputId,url){const form=$(formId);const file=$(inputId).files[0];if(!file)return;const data=new FormData();data.append('file',file);setBusy(form,true);try{const res=await api(url,{method:'POST',body:data,upload:true});toast(res.message||'Файл принят');form.reset();await load();}catch(e){toast(e.message)}finally{setBusy(form,false)}}
 $('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{const a=await api('/api/auth/login',{method:'POST',body:{password:$('password').value}});csrf=a.csrf;$('password').value='';$('loginError').textContent='';togglePanel(true);await load();}catch(err){$('loginError').textContent=err.message;}});
 $('logout').addEventListener('click',async()=>{try{await api('/api/auth/logout',{method:'POST'});}finally{csrf='';togglePanel(false)}});
-document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===tab));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='tab-'+tab.dataset.tab));}));
+document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===tab));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='tab-'+tab.dataset.tab));if(tab.dataset.tab==='videos')refreshVideoProgress().catch(e=>console.warn('Прогресс видео:',e));}));
 $('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget;const changes={};for(const name of ['show_clock','show_date','show_weather','clock_shift','night_mode'])changes[name]=f.elements[name].checked;for(const name of ['city','timezone','time_format','clock_position','video_mode'])changes[name]=f.elements[name].value;for(const name of ['latitude','longitude','night_opacity'])changes[name]=Number(f.elements[name].value);for(const name of ['video_interval_minutes','night_start','night_end'])changes[name]=Number(f.elements[name].value);changes.night_opacity/=100;try{await api('/api/admin/config',{method:'PUT',body:{changes}});$('settingsMessage').textContent='Сохранено';toast('Настройки применены');await load();}catch(e){toast(e.message)}});
 $('settingsForm').elements.night_opacity.addEventListener('input',updateNightValue);
 $('reloadDisplay').addEventListener('click',async()=>{try{await api('/api/admin/display/reload',{method:'POST'});toast('Экран перезагрузится при следующей проверке')}catch(e){toast(e.message)}});
@@ -178,3 +236,9 @@ setInterval(()=>{
     load().catch(err=>console.warn('Не удалось обновить статус видео:',err));
   }
 },10000);
+
+setInterval(()=>{
+  if(!$('panel').hidden && document.querySelector('.tab.active')?.dataset.tab==='videos'){
+    refreshVideoProgress().catch(e=>console.warn('Прогресс видео:',e));
+  }
+},2000);
