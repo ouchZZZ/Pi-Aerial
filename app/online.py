@@ -87,6 +87,11 @@ def nasa_https_url(url: str) -> str | None:
             ):
                 parsed = parsed._replace(scheme="https", netloc=parsed.hostname.lower())
                 url = urllib.parse.urlunsplit(parsed)
+        parsed = urllib.parse.urlsplit(url)
+        # Some NASA asset IDs contain literal spaces in returned URLs.
+        normalized_path = urllib.parse.quote(parsed.path, safe="/%:@!                url = urllib.parse.urlunsplit(parsed)
+        return url if allowed_video_url(url, "nasa") else None'()*+,;=-._~")
+        url = urllib.parse.urlunsplit(parsed._replace(path=normalized_path))
         return url if allowed_video_url(url, "nasa") else None
     except ValueError:
         return None
@@ -518,7 +523,7 @@ def _cache_worker(entry: dict) -> None:
                     [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                      "-i", str(temp), "-map", "0:v:0", "-an", "-c:v", "copy",
                      "-movflags", "+faststart", str(muxed)],
-                    check=True, timeout=120, capture_output=True,
+                    check=True, timeout=300, capture_output=True,
                 )
                 with muxed.open("rb") as remuxed:
                     if remuxed.read(12)[4:8] != b"ftyp":
@@ -526,6 +531,7 @@ def _cache_worker(entry: dict) -> None:
                 os.replace(muxed, final)
             else:
                 os.replace(temp, final)
+            print(f"[online] cached {provider}: {ident} ({total // 1024 // 1024} MB)", flush=True)
             _prune(max_bytes, ident)
         finally:
             temp.unlink(missing_ok=True)
