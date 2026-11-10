@@ -28,6 +28,28 @@ function zoneDateParts(){
   return {now,hour:Number(h)};
 }
 let calendarDay;
+const publicHolidays=new Set(['02-23','03-08','05-01','05-09','06-12','11-04']);
+// Government resolutions No. 1466 (2026) and No. 1187 (2027).
+const extraDaysOff=new Set(['2026-01-09','2026-12-31','2027-02-22','2027-11-05','2027-12-31']);
+const workingWeekends=new Set(['2027-02-20']);
+function isPublicHoliday(date){
+  const key=date.toISOString().slice(5,10);
+  return (key>='01-01'&&key<='01-08')||publicHolidays.has(key);
+}
+function calendarDayClass(date){
+  if(isPublicHoliday(date))return 'holiday';
+  const key=date.toISOString().slice(0,10);
+  if(workingWeekends.has(key))return '';
+  if(extraDaysOff.has(key)||[0,6].includes(date.getUTCDay()))return 'weekend';
+  // A holiday falling on a weekend outside the January holidays moves to the next workday.
+  const previous=new Date(date);
+  previous.setUTCDate(previous.getUTCDate()-1);
+  while([0,6].includes(previous.getUTCDay())||isPublicHoliday(previous)){
+    if(previous.getUTCMonth()!==0&&[0,6].includes(previous.getUTCDay())&&isPublicHoliday(previous))return 'weekend';
+    previous.setUTCDate(previous.getUTCDate()-1);
+  }
+  return '';
+}
 function drawCalendar(now, timeZone){
   const dayKey=new Intl.DateTimeFormat('sv-SE',{timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
   if(dayKey===calendarDay)return;
@@ -39,10 +61,12 @@ function drawCalendar(now, timeZone){
   const days=new Date(Date.UTC(year,month,0)).getUTCDate();
   const headings=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
   $('monthGrid').innerHTML=headings.map(label=>'<span class="day-label">'+label+'</span>').join('')+
-    '<span></span>'.repeat(firstDay)+
-    Array.from({length:days},(_,index)=>{
-      const number=index+1;
-      return number===day?'<span aria-current="date">'+number+'</span>':'<span>'+number+'</span>';
+    Array.from({length:firstDay+days},(_,index)=>{
+      const number=index-firstDay+1;
+      const date=new Date(Date.UTC(year,month-1,number));
+      const kind=number<1?'previous-month':calendarDayClass(date);
+      const current=number===day?' aria-current="date"':'';
+      return '<span class="'+kind+'"'+current+'>'+date.getUTCDate()+'</span>';
     }).join('');
 }
 function drawTime(){
