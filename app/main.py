@@ -149,11 +149,20 @@ def request_display_video(source: str, name: str, _: None = Depends(auth.require
     return {'ok': True}
 
 
+@app.post('/api/admin/display/play-once/stop')
+def stop_display_video(_: None = Depends(auth.require_admin)):
+    with LOCK:
+        DISPLAY_REQUESTS.clear()
+    return {'ok': True}
+
+
 @app.get('/api/display/play-once')
 def display_video_request():
     with LOCK:
         token = next(reversed(DISPLAY_REQUESTS), None)
-        if token and time.monotonic() - DISPLAY_REQUESTS[token][0] < DISPLAY_REQUEST_WINDOW:
+        if token is None:
+            return {'stop': True}
+        if time.monotonic() - DISPLAY_REQUESTS[token][0] < DISPLAY_REQUEST_WINDOW:
             return {'id': token, 'url': '/api/display/play-once/' + token}
     return None
 

@@ -274,6 +274,15 @@ function renderLibrary(onlineVideos){
   if(!(status?.videos||[]).length)localRoot.append(textNode('p','Своих готовых файлов пока нет.','hint'));
 }
 $('libraryRefresh').addEventListener('click',async()=>{await load();await loadLibrary()});
+$('stopDisplayVideo').addEventListener('click',async e=>{
+  const button=e.currentTarget;
+  button.disabled=true;
+  try{
+    await api('/api/admin/display/play-once/stop',{method:'POST'});
+    toast('Команда остановки отправлена');
+  }catch(e){toast(e.message)}
+  finally{button.disabled=false}
+});
 $('libraryPreviewClose').addEventListener('click',()=>$('libraryPreviewDialog').close());
 $('libraryPreviewDialog').addEventListener('close',()=>{
   const player=$('libraryPreviewPlayer');

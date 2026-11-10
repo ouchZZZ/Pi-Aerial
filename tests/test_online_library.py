@@ -137,8 +137,9 @@ def test_one_shot_accepts_both_ready_sources(library, tmp_path, monkeypatch):
     screen = TestClient(main.app)
     poll = "/api/display/play-once"
     command = "/api/admin/display/play-once"
-    assert screen.get(poll).json() is None
+    assert screen.get(poll).json() == {"stop": True}
     assert screen.post(f"{command}/online/{clip['id']}").status_code == 401
+    assert screen.post(f"{command}/stop").status_code == 401
     result = admin.post("/api/auth/login", json={"password": "sample-library-password"})
     csrf = {"x-csrf-token": result.json()["csrf"]}
     assert admin.post(f"{command}/local/{local.name}").status_code == 403
@@ -158,3 +159,10 @@ def test_one_shot_accepts_both_ready_sources(library, tmp_path, monkeypatch):
     main.DISPLAY_REQUESTS[token] = (created - main.DISPLAY_REQUEST_WINDOW, source, name)
     assert screen.get(poll).json() is None
     assert screen.get(request["url"]).content == local.read_bytes()
+
+    assert admin.post(f"{command}/stop").status_code == 403
+    assert admin.post(f"{command}/stop", headers=csrf).status_code == 200
+    assert screen.get(poll).json() == {"stop": True}
+    assert screen.get(request["url"]).status_code == 404
+    assert admin.post(f"{command}/local/{local.name}", headers=csrf).status_code == 200
+    assert screen.get(poll).json()["id"] != token
