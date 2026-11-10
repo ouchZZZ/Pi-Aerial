@@ -238,20 +238,22 @@ def refresh_catalog(force=False) -> None:
         if not cfg["online_sources"].get(name, False):
             continue
         state = dict(sources.get(name, {}))
-        age = time.time() - float(state.get("updated") or 0)
         minimum = API_REFRESH_SECONDS if name in ("pixabay", "pexels") else REFRESH_SECONDS
-        # Respect provider minimum metadata cache lifetimes even for forced refresh.
-        if age < minimum:
+        last_attempt = float(state.get("attempted") or state.get("updated") or 0)
+        # API responses must remain cached at least 24h for Pixabay/Pexels.
+        # Even failures wait for the next permitted attempt; avoid API hammering.
+        if time.time() - last_attempt < minimum:
             continue
+        attempted = time.time()
         try:
             clips = fetch()
             if not clips:
                 raise ValueError("Каталог пуст или не содержит подходящих MP4")
-            state = {"updated": time.time(), "items": clips, "error": None}
+            state = {"updated": time.time(), "attempted": attempted,
+                     "items": clips, "error": None}
         except Exception as exc:
+            state["attempted"] = attempted
             state["error"] = str(exc)[:180]
-            # Avoid hammering an unavailable endpoint on every display poll.
-            state["updated"] = time.time() if not state.get("items") else state.get("updated")
             print(f"[online] {name}: {exc}", flush=True)
         sources[name] = state
         changed = True
