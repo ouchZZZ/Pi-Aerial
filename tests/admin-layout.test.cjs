@@ -18,6 +18,7 @@ function mockElement(id){
     setAttribute(){},
     getAttribute(name){return name==='src'?(this.src||null):null;},
     append(...children){this.children.push(...children);},
+    replaceChildren(...children){this.children=[...children];},
     addEventListener(name,fn){listeners.set(name,fn);},
     dispatch(name,event={}){return listeners.get(name)?.(event);},
     getBoundingClientRect(){return {width:640,height:360,left:0,top:0};},
@@ -25,7 +26,7 @@ function mockElement(id){
   };
 }
 
-function harness(settings={},initialGrid=null){
+function harness(settings={},initialGrid=null,fontFamilies=['Noto Sans','DejaVu Serif']){
   const nodes=new Map();
   const node=id=>{
     if(!nodes.has(id))nodes.set(id,mockElement(id));
@@ -69,6 +70,7 @@ function harness(settings={},initialGrid=null){
   let saved=null;
   editor.open({status:{config},
     api:async(path,options)=>{
+      if(path==='/api/admin/osd/fonts')return {fonts:[...fontFamilies]};
       assert.equal(path,'/api/admin/config');
       saved=structuredClone(options.body.changes);
       Object.assign(config,saved);
@@ -268,4 +270,42 @@ test('new typography controls have defaults and reject invalid colors',async()=>
   ui.font('invalid-system-command');
   await ui.save();
   assert.deepEqual(ui.saved.osd_layout,{});
+});
+
+test('editor loads all installed Raspberry Pi font families and saves a selected family',async()=>{
+  const fonts=['DejaVu Sans','Noto Sans','Liberation Mono','Noto Serif'];
+  const ui=harness({},null,fonts);
+  await new Promise(resolve=>setImmediate(resolve));
+  const names=ui.node('layoutInstalledFonts').children.map(x=>x.textContent);
+  assert.deepEqual(names,fonts);
+  assert.match(ui.node('layoutFontsStatus').textContent,/4/);
+  ui.font('installed:Noto Sans');
+  await ui.save();
+  assert.equal(ui.saved.osd_layout.clock.font,'installed:Noto Sans');
+  ui.selectPosition(1);
+  ui.font('installed:DejaVu Sans');
+  await ui.save();
+  assert.equal(ui.saved.osd_layout_alt.clock.font,'installed:DejaVu Sans');
+  assert.equal(ui.saved.osd_layout.clock.font,'installed:Noto Sans');
+  fonts.push('Noto Serif Display');
+  await ui.node('layoutFontsRefresh').dispatch('click');
+  assert.equal(ui.node('layoutInstalledFonts').children.at(-1).textContent,'Noto Serif Display');
+});
+
+test('saved missing font is preserved and shown while installed font list changes',async()=>{
+  const oldFont='installed:Removed Font';
+  const layout={
+    clock:{x:10,y:10,scale:1,font:oldFont},
+    weather:{x:10,y:30,scale:1},
+    calendar:{x:75,y:10,scale:1},
+    footer:{x:5,y:92,scale:1},
+  };
+  const ui=harness({osd_layout:layout},null,['DejaVu Sans']);
+  await new Promise(resolve=>setImmediate(resolve));
+  const opts=ui.node('layoutInstalledFonts').children;
+  assert.equal(opts.length,2);
+  assert.match(opts[1].textContent,/Removed Font/);
+  assert.equal(ui.node('layoutFont').value,oldFont);
+  await ui.save();
+  assert.equal(ui.saved.osd_layout.clock.font,oldFont);
 });
