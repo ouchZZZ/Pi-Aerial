@@ -172,6 +172,19 @@ test('both OSD blocks alternate sides when a video starts playing', async () => 
   }
 });
 
+test('calendar shows leading dates, holidays and transferred days off', async () => {
+  const h = await ready();
+  h.context.drawCalendar(new Date('2027-02-22T12:00:00Z'), 'UTC');
+  let grid = h.elements.get('monthGrid').innerHTML;
+  assert.match(grid, /class=""[^>]*>20</);
+  assert.match(grid, /class="weekend" aria-current="date">22</);
+  assert.match(grid, /class="holiday">23</);
+  h.context.drawCalendar(new Date('2027-05-03T12:00:00Z'), 'UTC');
+  grid = h.elements.get('monthGrid').innerHTML;
+  assert.match(grid, /class="previous-month">26<\/span>.*class="previous-month">30<\/span><span class="holiday">1</);
+  assert.match(grid, /class="weekend" aria-current="date">3</);
+});
+
 test('weekly forecast skips today and follows the weather switch', async () => {
   const h = await ready();
   vm.runInContext("Date = class extends Date { constructor(...args) { super(...(args.length ? args : ['2027-01-01T12:00:00Z'])); } }", h.context);
