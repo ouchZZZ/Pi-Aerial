@@ -12,6 +12,16 @@
 <div class="section-title"><div><h2>Редактор расположения OSD</h2><p>Перетаскивайте часы, погоду, календарь и подпись видео. Потяните угол блока для изменения масштаба.</p></div></div>
 <div class="card layout-editor">
   <div class="layout-controls">
+    <label for="layoutMode">Положения OSD
+      <select id="layoutMode"><option value="single">Одно постоянное</option>
+        <option value="alternate">Два, чередовать при смене видео</option></select>
+    </label>
+    <label for="layoutPosition" id="layoutPositionField">Редактировать положение
+      <select id="layoutPosition"><option value="0">Положение №1</option>
+        <option value="1">Положение №2</option></select>
+    </label>
+  </div>
+  <div class="layout-controls">
     <label for="layoutBlock">Блок<select id="layoutBlock">
       <option value="clock">Часы</option><option value="weather">Погода и прогноз</option>
       <option value="calendar">Календарь</option><option value="footer">Описание видео</option>
@@ -22,9 +32,9 @@
     <iframe id="layoutFrame" title="Предпросмотр OSD без воспроизведения видео" scrolling="no"></iframe>
     <div class="layout-overlay" id="layoutOverlay" aria-label="Перетаскиваемые блоки"></div>
   </div>
-  <p class="hint">Предпросмотр 16:9. Настройки записываются только после сохранения. На телевизоре расположение обновится автоматически при следующем опросе (до 30 секунд).</p>
+  <p class="hint">Предпросмотр 16:9. Каждый макет редактируется отдельно. В режиме двух положений они чередуются при запуске следующего видео. Сохранение применяется к экрану при очередном опросе (до 30 секунд).</p>
   <div class="actions"><button class="primary" type="button" id="layoutSave">Сохранить расположение</button>
-    <button type="button" id="layoutReset">Сбросить расположение</button><span id="layoutMessage" class="message" role="status"></span></div>
+    <button type="button" id="layoutReset">Сбросить оба положения и режим</button><span id="layoutMessage" class="message" role="status"></span></div>
 </div>
 </section>
 <section class="page" id="tab-videos"><div class="section-title"><div><h2>Видеотека</h2><p>Онлайн-видео из выбранных источников, а просмотренные ролики остаются в ограниченном кеше на microSD.</p></div></div>
