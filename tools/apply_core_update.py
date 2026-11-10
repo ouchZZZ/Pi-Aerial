@@ -17,6 +17,19 @@ STATUS = DATA / 'update_status.json'
 VERSION_RX = re.compile(r'\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?\Z')
 SHA_RX = re.compile(r'[0-9a-f]{40}\Z')
 RELEASE_FILES = ('app', 'web', 'tools', 'requirements.txt', 'VERSION')
+SYSTEM_DEPS_HELPER = Path('/usr/local/libexec/pi-aerial/system_deps')
+
+
+def ensure_system_dependencies():
+    """Use a root-owned fixed whitelist; never pass package names from GitHub."""
+    if not SYSTEM_DEPS_HELPER.is_file() or SYSTEM_DEPS_HELPER.is_symlink():
+        # Older 0.2.0 installs predate the restricted helper; they remain upgradeable.
+        # Re-run install.sh once after updating to enable unattended OS dependency repair.
+        print('[deps] Root helper missing: re-run the new install.sh once to enable automatic OS package repair.',
+              file=sys.stderr, flush=True)
+        return
+    subprocess.run(['sudo', '-n', str(SYSTEM_DEPS_HELPER), '--ensure'],
+                   check=True, timeout=420)
 
 
 def save_status(message, ok):
@@ -59,9 +72,10 @@ def prepare_venv(target, old):
         shutil.copy2(old / 'requirements.txt', requirements)
     if not (target / '.venv' / 'bin' / 'python').exists():
         subprocess.run([sys.executable, '-m', 'venv', str(target / '.venv')], check=True, timeout=90)
-        subprocess.run([str(target / '.venv' / 'bin' / 'python'), '-m', 'pip',
-                        'install', '--disable-pip-version-check', '-r', str(requirements)],
-                       check=True, timeout=360)
+    # Always retry pip: an interrupted previous download may leave a half-built venv.
+    subprocess.run([str(target / '.venv' / 'bin' / 'python'), '-m', 'pip',
+                    'install', '--disable-pip-version-check', '-r', str(requirements)],
+                   check=True, timeout=360)
 
 
 def stage_github(queued, old):
@@ -138,6 +152,7 @@ def main():
         if target.resolve() == old:
             save_status('Последняя версия уже установлена', True)
             return
+        ensure_system_dependencies()
         prepare_venv(target, old)
         switch(target)
         did_switch = True
