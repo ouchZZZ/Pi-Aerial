@@ -379,6 +379,68 @@ def test_processed_history_prevents_repeated_download_after_eviction(monkeypatch
     assert clip["id"] not in online.ACTIVE
 
 
+def test_cache_limit_pauses_without_eviction_then_resumes(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(online, "CACHE_FOLDER", cache)
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "PROCESSED_FILE", tmp_path / "processed.json")
+    config = {"online_sources": {"apple": True, "nasa": False},
+              "online_cache_enabled": True, "online_cache_gb": 1}
+    monkeypatch.setattr(online, "settings", lambda: config)
+    monkeypatch.setattr(
+        online.shutil, "disk_usage",
+        lambda path: SimpleNamespace(total=128 * 1024**3, free=30 * 1024**3),
+    )
+    monkeypatch.setattr(online.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+    old = online._clip("apple", "old", "https://sylvan.apple.com/old.mov",
+                       "Old", "Apple", "https://www.apple.com/")
+    new = online._clip("apple", "new", "https://sylvan.apple.com/new.mov",
+                       "New", "Apple", "https://www.apple.com/")
+    ready = cache / (old["id"] + ".mp4")
+    with ready.open("wb") as video:
+        video.truncate(800 * 1024**2)
+    (cache / (old["id"] + ".ready")).write_text(online.CACHE_PROFILE)
+    online.atomic_json(online.CATALOG_FILE, {
+        "sources": {"apple": {"items": [old, new]}}
+    })
+
+    status = online.cache_status()
+    assert status["paused"] and status["pause_reason"] == "limit"
+    assert status["used_bytes"] == 800 * 1024**2
+    calls = []
+    monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]))
+    online.warm_cache()
+    assert calls == []
+    assert ready.exists()  # no eviction, even at the configured limit
+
+    config["online_cache_gb"] = 2
+    assert not online.cache_status()["paused"]
+    online.warm_cache()
+    assert calls == [new["id"]]
+    assert ready.exists()
+
+
+def test_cache_pauses_if_disk_reserve_is_threatened(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(online, "CACHE_FOLDER", cache)
+    monkeypatch.setattr(online, "settings", lambda: {"online_cache_gb": 12})
+    monkeypatch.setattr(
+        online.shutil, "disk_usage",
+        lambda path: SimpleNamespace(
+            total=128 * 1024**3,
+            free=online.RESERVE_BYTES + 2 * online.MAX_DOWNLOAD - 1,
+        ),
+    )
+    status = online.cache_status()
+    assert status["paused"] and status["pause_reason"] == "disk"
+
+
 def test_uncached_mov_is_never_streamed_as_mp4(monkeypatch):
     from fastapi.testclient import TestClient
     from app import main
