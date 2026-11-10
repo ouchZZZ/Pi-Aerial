@@ -55,8 +55,15 @@ if [[ ! -x "$DEST/.venv/bin/python" ]]; then
 fi
 "$DEST/.venv/bin/python" -m pip install -r "$DEST/requirements.txt"
 if [[ -n "$GIT_REVISION" ]]; then
-  test -f "$HOME/.ssh/pi_aerial_github" || { echo 'Deploy key ~/.ssh/pi_aerial_github не найден'; exit 1; }
-  printf '{"enabled":true,"remote":"git@github.com:ouchZZZ/Pi-Aerial.git","ssh_key":"%s/.ssh/pi_aerial_github"}\n' "$HOME" > "$BASE/data/github.json"
+  # Preserve existing SSH deploy-key installs while enabling public HTTPS clones.
+  GIT_ORIGIN="$(git -C "$HERE" remote get-url origin 2>/dev/null || true)"
+  if [[ ( "$GIT_ORIGIN" == "git@github.com:ouchZZZ/Pi-Aerial.git" ||
+           "$GIT_ORIGIN" == "ssh://git@github.com/ouchZZZ/Pi-Aerial.git" ) &&
+        -f "$HOME/.ssh/pi_aerial_github" ]]; then
+    printf '{"enabled":true,"remote":"git@github.com:ouchZZZ/Pi-Aerial.git","ssh_key":"%s/.ssh/pi_aerial_github"}\n' "$HOME" > "$BASE/data/github.json"
+  else
+    printf '%s\n' '{"enabled":true,"remote":"https://github.com/ouchZZZ/Pi-Aerial.git"}' > "$BASE/data/github.json"
+  fi
   chmod 600 "$BASE/data/github.json"
 fi
 # The updater is independent of the releases it replaces.
