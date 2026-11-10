@@ -85,7 +85,8 @@ def test_legacy_ssh_configuration(monkeypatch, tmp_path):
         'ssh_key': str(key)
     }))
     assert github_updates._config() == (github_updates.LEGACY_SSH_REMOTE, key)
-    assert "'my deploy key'" in github_updates._git_env(key)['GIT_SSH_COMMAND']
+    import shlex
+    assert shlex.quote(str(key)) in github_updates._git_env(key)['GIT_SSH_COMMAND']
 
 
 def test_reject_untrusted_remotes(monkeypatch, tmp_path):
