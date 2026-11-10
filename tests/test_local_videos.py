@@ -22,7 +22,7 @@ def isolated_queue(monkeypatch, tmp_path):
     return tmp_path
 
 
-def _fake_normalize(source, target, max_bytes=None):
+def _fake_normalize(source, target, max_bytes=None, on_progress=None):
     assert source.exists()
     assert max_bytes == local_videos.LOCAL_MAX_BYTES
     target.write_bytes(bytes.fromhex("000000186674797069736f6d") + b"x" * 1200)
