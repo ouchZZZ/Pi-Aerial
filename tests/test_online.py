@@ -236,3 +236,51 @@ def test_http_video_range_proxy_responds_as_mp4(monkeypatch):
     assert r.headers["content-range"] == "bytes 0-3/100"
     assert r.headers["cache-control"] == "no-store"
     assert seen == ["bytes=0-3"]
+
+
+def test_old_quicktime_cache_is_invalidated(monkeypatch, tmp_path):
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
+    ident = "a" * 24
+    path = tmp_path / (ident + ".mp4")
+    path.write_bytes(b"\x00\x00\x00\x18ftypqt  " + b"X" * 1500)
+    assert online.cached_file(ident) is None
+    assert not path.exists()
+
+
+def test_apple_mov_cache_remux_uses_stream_copy(monkeypatch, tmp_path):
+    import io
+    from types import SimpleNamespace
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_cache_enabled": True, "online_cache_gb": 12
+    })
+    disk = SimpleNamespace(free=100 * 1024 ** 3, total=128 * 1024 ** 3)
+    monkeypatch.setattr(online.shutil, "disk_usage", lambda folder: disk)
+    monkeypatch.setattr(online.shutil, "which", lambda command: "/usr/bin/ffmpeg")
+    class FakeResponse(io.BytesIO):
+        def __init__(self):
+            super().__init__(b"\x00\x00\x00\x18ftypqt  " + b"z" * 2500)
+            self.headers = {"Content-Length": "2512"}
+    class FakeOpener:
+        def open(self, request, timeout):
+            return FakeResponse()
+    monkeypatch.setattr(online.urllib.request, "build_opener",
+                        lambda *args: FakeOpener())
+    recorded = []
+
+    def fake_ffmpeg(args, **kwargs):
+        recorded.append(args)
+        from pathlib import Path
+        Path(args[-1]).write_bytes(b"\x00\x00\x00\x18ftypisom" + b"M" * 2500)
+
+    monkeypatch.setattr(online.subprocess, "run", fake_ffmpeg)
+    clip = online._clip(
+        "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
+        "Ocean", "Apple", "https://www.apple.com/"
+    )
+    assert online.DOWNLOAD_SLOT.acquire(blocking=False)
+    online._cache_worker(clip)
+    path = tmp_path / (clip["id"] + ".mp4")
+    assert path.is_file()
+    assert path.read_bytes()[8:12] == b"isom"
+    assert recorded and "-c:v" in recorded[0] and "copy" in recorded[0]
