@@ -25,3 +25,9 @@
 .month-grid .day-label{font-weight:600}
 .month-grid [aria-current="date"]{background:#fff;color:#071621;text-shadow:none;border-radius:.3em;font-weight:700}
 @media(max-width:720px){.clock{font-size:clamp(38px,12vw,86px)}.weather{gap:7px}.wx-main span{font-size:clamp(12px,3vw,19px)}}
+
+.month-grid .weekend{color:#a8dcff}
+.month-grid .holiday{color:#ffaaaa}
+.month-grid .previous-month{opacity:.48}
+.month-grid .weekend[aria-current="date"]{background:#a8dcff;color:#071621}
+.month-grid .holiday[aria-current="date"]{background:#ffaaaa;color:#071621}
