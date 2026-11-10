@@ -92,7 +92,9 @@ def test_catalog_respects_metadata_ttl(monkeypatch, tmp_path):
     online.refresh_catalog()
     online.refresh_catalog()
     assert len(calls) == 1
-    assert len(online.list_clips()) == 1
+    # Metadata may be ready before the background MP4 conversion finishes.
+    assert len(online.list_clips()) == 0
+    assert online.source_status()[0]["count"] == 1
 
 
 def test_disabled_provider_never_surfaces(monkeypatch, tmp_path):
@@ -215,7 +217,7 @@ def test_http_video_range_proxy_responds_as_mp4(monkeypatch):
     from app import main
 
     entry = online._clip(
-        "apple", "a", "https://sylvan.apple.com/Videos/ocean.mov",
+        "nasa", "a", "https://images-assets.nasa.gov/video/earth.mp4",
         "Ocean", "Apple", "https://www.apple.com/"
     )
     class Upstream(io.BytesIO):
@@ -224,7 +226,7 @@ def test_http_video_range_proxy_responds_as_mp4(monkeypatch):
             super().__init__(b"test")
             self.headers = {
                 "Content-Length": "4", "Content-Range": "bytes 0-3/100",
-                "Content-Type": "video/quicktime"
+                "Content-Type": "video/mp4"
             }
 
     seen = []
