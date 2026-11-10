@@ -157,6 +157,31 @@ test('clock is polled every ten seconds and unchanged text is not rewritten', as
   assert.deepEqual(ids.map(id => h.elements.get(id).writes), before);
 });
 
+test('stop cancels an active one-shot and leaves regular rotation alone', async () => {
+  const h = await ready();
+  h.publicState.videos = [{url: '/media/normal.mp4'}];
+  await h.context.poll();
+  h.publicState.displayRequest = {id: 'stop-test', url: '/api/display/play-once/stop-test'};
+  await h.context.pollDisplayRequest();
+  const oneShot = h.video.pending.at(-1);
+  assert.ok(h.bodyClasses.has('playing-once'));
+
+  h.publicState.displayRequest = null;
+  await h.context.pollDisplayRequest();
+  assert.ok(h.bodyClasses.has('playing-once'));
+
+  h.publicState.displayRequest = {stop: true};
+  await h.context.pollDisplayRequest();
+  assert.equal(h.video.src, '/media/normal.mp4');
+  assert.ok(!h.bodyClasses.has('playing-once'));
+  const loadCalls = h.video.loadCalls;
+  oneShot.reject(new Error('Playback interrupted'));
+  await settle();
+  await h.context.pollDisplayRequest();
+  assert.equal(h.video.loadCalls, loadCalls);
+  assert.equal(h.errors.length, 0);
+});
+
 test('two signals for a single invalid video schedule one fallback', async () => {
   const h = await ready();
   h.publicState.videos = [{id: 'bad', url: '/media/online/bad', provider: 'apple'}];

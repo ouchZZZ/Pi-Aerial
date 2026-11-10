@@ -218,6 +218,10 @@ async function pollDisplayRequest(){
     const r=await fetch('/api/display/play-once',{cache:'no-store'});
     if(!r.ok)throw Error(r.status);
     const request=await r.json();
+    if(request?.stop){
+      if(playingOnce)changeVideo();
+      return;
+    }
     if(!request||request.id===sessionStorage.getItem('lastDisplayRequest'))return;
     sessionStorage.setItem('lastDisplayRequest',request.id);
     clearTimeout(changeTimer);
