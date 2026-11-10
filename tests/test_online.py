@@ -18,6 +18,11 @@ def test_only_trusted_https_media_hosts():
     assert not online.allowed_video_url("https://x:pw@sylvan.apple.com/a.mp4", "apple")
     assert not online.allowed_video_url("https://sylvan.apple.com:8080/a.mp4", "apple")
     assert not online.allowed_video_url("https://images-assets.nasa.gov/a.mp4", "apple")
+    assert online.nasa_https_url("http://images-assets.nasa.gov/video/earth~orig.mp4") == "https://images-assets.nasa.gov/video/earth~orig.mp4"
+    assert online.nasa_https_url("http://169.254.169.254/latest/meta-data") is None
+    assert online.nasa_https_url("http://nasa.gov.evil.test/clip.mp4") is None
+    assert online.nasa_https_url("http://images-assets.nasa.gov/video/file name.mp4") == "https://images-assets.nasa.gov/video/file%20name.mp4"
+    assert online.nasa_https_url("https://images-assets.nasa.gov/video/earth.mov") == "https://images-assets.nasa.gov/video/earth.mov"
 
 
 def test_apple_catalog_selects_h264(monkeypatch):
@@ -82,11 +87,14 @@ def test_catalog_respects_metadata_ttl(monkeypatch, tmp_path):
                         "Ocean", "Apple Aerial", "https://www.apple.com/tv/")
     monkeypatch.setattr(online, "CATALOG_FILE", path)
     monkeypatch.setattr(online, "FETCHERS", {"apple": lambda: calls.append(1) or [clip]})
+    monkeypatch.setattr(online, "warm_cache", lambda: None)
     monkeypatch.setattr(online, "settings", lambda: {"online_sources": {"apple": True}})
     online.refresh_catalog()
     online.refresh_catalog()
     assert len(calls) == 1
-    assert len(online.list_clips()) == 1
+    # Metadata may be ready before the background MP4 conversion finishes.
+    assert len(online.list_clips()) == 0
+    assert online.source_status()[0]["count"] == 1
 
 
 def test_disabled_provider_never_surfaces(monkeypatch, tmp_path):
@@ -135,6 +143,7 @@ def test_force_refresh_apple_but_not_commercial_api(monkeypatch, tmp_path):
     monkeypatch.setattr(online, 'FETCHERS', {
         'apple': make_fetch('apple'), 'pixabay': make_fetch('pixabay')
     })
+    monkeypatch.setattr(online, "warm_cache", lambda: None)
     monkeypatch.setattr(online, 'settings', lambda: {
         'online_sources': {'apple': True, 'pixabay': True}
     })
@@ -208,7 +217,7 @@ def test_http_video_range_proxy_responds_as_mp4(monkeypatch):
     from app import main
 
     entry = online._clip(
-        "apple", "a", "https://sylvan.apple.com/Videos/ocean.mov",
+        "nasa", "a", "https://images-assets.nasa.gov/video/earth.mp4",
         "Ocean", "Apple", "https://www.apple.com/"
     )
     class Upstream(io.BytesIO):
@@ -217,7 +226,7 @@ def test_http_video_range_proxy_responds_as_mp4(monkeypatch):
             super().__init__(b"test")
             self.headers = {
                 "Content-Length": "4", "Content-Range": "bytes 0-3/100",
-                "Content-Type": "video/quicktime"
+                "Content-Type": "video/mp4"
             }
 
     seen = []
@@ -267,13 +276,11 @@ def test_apple_mov_cache_remux_uses_stream_copy(monkeypatch, tmp_path):
     monkeypatch.setattr(online.urllib.request, "build_opener",
                         lambda *args: FakeOpener())
     recorded = []
-
-    def fake_ffmpeg(args, **kwargs):
-        recorded.append(args)
-        from pathlib import Path
-        Path(args[-1]).write_bytes(b"\x00\x00\x00\x18ftypisom" + b"M" * 2500)
-
-    monkeypatch.setattr(online.subprocess, "run", fake_ffmpeg)
+    def fake_normalize(source, output):
+        recorded.append(str(source))
+        output.write_bytes(bytes.fromhex("000000186674797069736f6d") + b"M" * 2500)
+        return "copy"
+    monkeypatch.setattr(online, "normalize_video", fake_normalize)
     clip = online._clip(
         "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
         "Ocean", "Apple", "https://www.apple.com/"
@@ -283,4 +290,84 @@ def test_apple_mov_cache_remux_uses_stream_copy(monkeypatch, tmp_path):
     path = tmp_path / (clip["id"] + ".mp4")
     assert path.is_file()
     assert path.read_bytes()[8:12] == b"isom"
-    assert recorded and "-c:v" in recorded[0] and "copy" in recorded[0]
+    assert (tmp_path / (clip["id"] + ".ready")).read_text() == online.CACHE_PROFILE
+    assert recorded
+
+
+def test_nasa_http_manifest_links_are_upgraded(monkeypatch):
+    def fake(url, **kw):
+        if "/search?" in url:
+            return {"collection": {"items": [{"data": [{"nasa_id": "earth",
+                                                          "title": "Earth"}]}]}}
+        return {"collection": {"items": [{
+            "href": "http://images-assets.nasa.gov/video/earth/earth~orig.mp4"}]}}
+    monkeypatch.setattr(online, "_http_json", fake)
+    clips = online._nasa()
+    assert clips and clips[0]["remote_url"] == (
+        "https://images-assets.nasa.gov/video/earth/earth~orig.mp4"
+    )
+
+
+def test_mov_not_advertised_until_real_mp4_cache_ready(monkeypatch, tmp_path):
+    clip = online._clip(
+        "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
+        "Ocean", "Apple", "https://www.apple.com/"
+    )
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path / "cache")
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"apple": True, "nasa": False},
+        "online_cache_enabled": True,
+    })
+    online.CACHE_FOLDER.mkdir(parents=True)
+    online.atomic_json(online.CATALOG_FILE,
+                       {"sources": {"apple": {"items": [clip], "updated": 1}}})
+    assert online.list_clips() == []
+    from pathlib import Path
+    (online.CACHE_FOLDER / (clip["id"] + ".mp4")).write_bytes(
+        bytes.fromhex("000000186674797069736f6d") + b"0" * 1500
+    )
+    (online.CACHE_FOLDER / (clip["id"] + ".ready")).write_text(online.CACHE_PROFILE)
+    clips = online.list_clips()
+    assert len(clips) == 1 and clips[0]["cached"] is True
+    assert online.source_status()[0]["playable"] == 1
+
+
+def test_only_bounded_mov_prefetch_one_at_a_time(monkeypatch, tmp_path):
+    clips = [online._clip(
+        "apple", str(n), f"https://sylvan.apple.com/Videos/{n}.mov",
+        "Ocean", "Apple", "https://www.apple.com/"
+    ) for n in range(7)]
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path / "cache")
+    online.atomic_json(online.CATALOG_FILE,
+                       {"sources": {"apple": {"items": clips, "updated": 1}}})
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"apple": True, "nasa": False},
+        "online_cache_enabled": True,
+    })
+    monkeypatch.setattr(online.shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    calls = []
+    monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]))
+    online.warm_cache()
+    assert calls == [clips[0]["id"]]
+
+
+def test_uncached_mov_is_never_streamed_as_mp4(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main
+    entry = online._clip(
+        "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
+        "Ocean", "Apple", "https://www.apple.com/"
+    )
+    monkeypatch.setattr(online, "lookup", lambda clip_id: entry)
+    monkeypatch.setattr(online, "cached_file", lambda clip_id: None)
+    fetched = []
+    monkeypatch.setattr(online, "open_video_stream",
+                        lambda *args: fetched.append(True))
+    monkeypatch.setattr(online, "try_cache",
+                        lambda entry: None)
+    client = TestClient(main.app)
+    response = client.get("/media/online/" + entry["id"])
+    assert response.status_code == 503
+    assert not fetched

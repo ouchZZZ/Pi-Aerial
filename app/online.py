@@ -22,6 +22,7 @@ from pathlib import Path
 import certifi
 
 from .storage import DATA, atomic_json, read_json, settings
+from .video_conversion import normalize_video
 
 SOURCE_NAMES = {
     "apple": "Apple Aerial",
@@ -44,6 +45,9 @@ RESERVE_BYTES = 5 * 1024 ** 3
 LOCK = threading.RLock()
 DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 ACTIVE: set[str] = set()
+CACHE_FAILED_UNTIL: dict[str, float] = {}
+APPLE_WARM_TARGET = 4
+CACHE_PROFILE = "h264-1080p30-8bit-v1"
 
 
 def allowed_video_url(url: str, provider: str) -> bool:
@@ -66,6 +70,29 @@ def allowed_video_url(url: str, provider: str) -> bool:
         return any(host == d or host.endswith("." + d) for d in suffix)
     except (ValueError, AttributeError):
         return False
+
+
+def nasa_https_url(url: str) -> str | None:
+    """Upgrade only NASA-owned HTTP asset links to verified HTTPS."""
+    if not isinstance(url, str) or len(url) > 2048:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme == "http" and parsed.username is None
+                and parsed.password is None and parsed.port in (None, 80)
+                and parsed.hostname and (
+                    parsed.hostname.lower() == "nasa.gov"
+                    or parsed.hostname.lower().endswith(".nasa.gov")
+                )):
+            parsed = parsed._replace(scheme="https", netloc=parsed.hostname.lower())
+        # NASA sometimes returns raw spaces in media asset paths.
+        parsed = parsed._replace(
+            path=urllib.parse.quote(parsed.path, safe="/%:._-~")
+        )
+        normalized = urllib.parse.urlunsplit(parsed)
+        return normalized if allowed_video_url(normalized, "nasa") else None
+    except ValueError:
+        return None
 
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -134,6 +161,11 @@ def _key(provider: str) -> str:
     return (os.getenv(variable) or read_json(DATA / "source_keys.json").get(provider) or "").strip()
 
 
+def requires_remux(entry: dict) -> bool:
+    """MOV is a QuickTime container; Chromium must receive real MP4 bytes."""
+    return urllib.parse.urlsplit(entry.get("remote_url", "")).path.lower().endswith(".mov")
+
+
 def source_status() -> list[dict]:
     cfg = settings()
     raw = read_json(CATALOG_FILE).get("sources", {})
@@ -147,7 +179,15 @@ def source_status() -> list[dict]:
             "ready": (not requires_key or bool(_key(provider))),
             "requires_key": requires_key,
             "count": len(state.get("items", [])),
-            "error": state.get("error"),
+            "playable": sum(
+                1 for entry in state.get("items", [])
+                if cached_file(entry.get("id", "")) is not None
+            ) if provider in ("apple", "nasa") else len(state.get("items", [])),
+            "error": (("Установите ffmpeg: sudo apt install -y ffmpeg"
+                       if shutil.which("ffmpeg") is None else None)
+                      if provider in ("apple", "nasa")
+                      and cfg["online_sources"].get(provider)
+                      and not state.get("error") else state.get("error")),
             "last_updated": state.get("updated"),
         })
     return out
@@ -208,9 +248,11 @@ def _nasa_manifest(entry: dict) -> tuple[dict | None, str]:
     files = [r.get("href") for r in manifest.get("collection", {}).get("items", [])
              if isinstance(r, dict) and isinstance(r.get("href"), str)]
     movies = [
-        url for url in files
-        if urllib.parse.urlsplit(url).path.lower().endswith((".mp4", ".m4v", ".mov"))
-        and allowed_video_url(url, "nasa")
+        secure for url in files
+        if isinstance(url, str)
+        for secure in [nasa_https_url(url)]
+        if secure is not None
+        and urllib.parse.urlsplit(secure).path.lower().endswith((".mp4", ".m4v", ".mov"))
     ]
     # Prefer browser-friendly MP4, then medium/small renditions to avoid 4K.
     movies.sort(key=lambda url: (
@@ -346,6 +388,11 @@ def refresh_catalog(force=False) -> None:
             print(f"[online] {name}: {exc}", flush=True)
         sources[name] = state
         changed = True
+        # Do not wait for slower NASA discovery before starting the first MOV.
+        if name in ("apple", "nasa"):
+            with LOCK:
+                atomic_json(CATALOG_FILE, {"sources": sources})
+            warm_cache()
     if changed:
         with LOCK:
             atomic_json(CATALOG_FILE, {"sources": sources})
@@ -365,7 +412,11 @@ def list_clips() -> list[dict]:
             item_id = item.get("id", "")
             if not isinstance(item_id, str) or len(item_id) != 24:
                 continue
-            cached = (CACHE_FOLDER / (item_id + ".mp4")).is_file()
+            cached = cached_file(item_id) is not None
+            # Apple and NASA publish a mix of QuickTime, HEVC and H.264.
+            # Only list files already normalized to our compatible MP4 profile.
+            if provider in ("apple", "nasa") and not cached:
+                continue
             result.append({"id": item_id, "name": item["name"],
                            "url": "/media/online/" + item_id,
                            "provider": provider, "credit": item.get("credit", ""),
@@ -389,19 +440,24 @@ def lookup(clip_id: str) -> dict | None:
 
 
 def cached_file(clip_id: str) -> Path | None:
-    path = CACHE_FOLDER / (clip_id + ".mp4")
-    if path.is_file() and not path.is_symlink():
-        # Old releases incorrectly stored QuickTime MOV bytes as .mp4.
-        # Invalidate them so the new worker can remux into actual MP4.
-        with path.open("rb") as stream:
-            header = stream.read(12)
-        if header[8:12] == b"qt  ":
-            path.unlink(missing_ok=True)
-            return None
-        path.touch()
-        return path
-    return None
+    """Only serve files normalized and verified by the current converter.
 
+    v0.3.2 and earlier could store raw QuickTime or unsupported H.264 in .mp4.
+    The ready marker prevents those legacy files from being reused.
+    """
+    path = CACHE_FOLDER / (clip_id + ".mp4")
+    marker = CACHE_FOLDER / (clip_id + ".ready")
+    if path.is_file() and not path.is_symlink():
+        if not marker.is_symlink() and marker.is_file():
+            if marker.read_text(encoding="utf8") == CACHE_PROFILE:
+                return path
+        with LOCK:
+            if clip_id in ACTIVE:
+                # Converter has published the output but not its marker yet.
+                return None
+        path.unlink(missing_ok=True)
+        marker.unlink(missing_ok=True)
+    return None
 
 def _prune(max_bytes: int, except_id: str) -> None:
     candidates = sorted((p for p in CACHE_FOLDER.glob("*.mp4") if p.is_file()
@@ -414,6 +470,7 @@ def _prune(max_bytes: int, except_id: str) -> None:
             return
         size = file.stat().st_size
         file.unlink(missing_ok=True)
+        file.with_suffix(".ready").unlink(missing_ok=True)
         total -= size
 
 
@@ -430,7 +487,7 @@ def _cache_worker(entry: dict) -> None:
         temp = CACHE_FOLDER / (ident + ".part")
         muxed = CACHE_FOLDER / (ident + ".mux.mp4")
         final = CACHE_FOLDER / (ident + ".mp4")
-        if final.exists():
+        if cached_file(ident) is not None:
             return
         # Remove incomplete files left by a crashed older download.
         temp.unlink(missing_ok=True)
@@ -460,32 +517,24 @@ def _cache_worker(entry: dict) -> None:
                 header = f.read(12)
             if header[4:8] != b"ftyp":
                 raise ValueError("Ответ сервера не содержит MP4/MOV")
-            is_mov = urllib.parse.urlsplit(entry["remote_url"]).path.lower().endswith(".mov")
-            if is_mov:
-                ffmpeg = shutil.which("ffmpeg")
-                if not ffmpeg:
-                    raise ValueError("Для кеширования MOV нужен ffmpeg; онлайн-поток доступен")
-                if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:
-                    raise ValueError("Не хватает места на безопасный ремультиплекс MOV")
-                # Copy the H.264 track into a fast-start MP4 container. No
-                # re-encoding or extra CPU-heavy transcoding on Raspberry Pi.
-                subprocess.run(
-                    [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                     "-i", str(temp), "-map", "0:v:0", "-an", "-c:v", "copy",
-                     "-movflags", "+faststart", str(muxed)],
-                    check=True, timeout=120, capture_output=True,
-                )
-                with muxed.open("rb") as remuxed:
-                    if remuxed.read(12)[4:8] != b"ftyp":
-                        raise ValueError("Ошибка при преобразовании MOV в MP4")
-                os.replace(muxed, final)
-            else:
-                os.replace(temp, final)
+            if shutil.which("ffmpeg") is None:
+                raise ValueError("Нужен ffmpeg для подготовки видео")
+            if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:
+                raise ValueError("Недостаточно места для преобразования видео")
+            print(f"[online] preparing {provider}: {ident} "
+                  f"({total // 1024 // 1024} МБ исходник)", flush=True)
+            mode = normalize_video(temp, muxed)
+            os.replace(muxed, final)
+            (CACHE_FOLDER / (ident + ".ready")).write_text(CACHE_PROFILE, encoding="utf8")
+            print(f"[online] ready {provider}: {ident} "
+                  f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
             _prune(max_bytes, ident)
         finally:
             temp.unlink(missing_ok=True)
             muxed.unlink(missing_ok=True)
     except Exception as exc:
+        with LOCK:
+            CACHE_FAILED_UNTIL[ident] = time.time() + 3600
         print(f"[online] cannot cache {ident}: {exc}", flush=True)
     finally:
         with LOCK:
@@ -498,12 +547,39 @@ def try_cache(entry: dict) -> None:
         return
     ident = entry["id"]
     with LOCK:
-        if ident in ACTIVE or (CACHE_FOLDER / (ident + ".mp4")).is_file():
+        if (ident in ACTIVE or cached_file(ident) is not None
+                or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
             return
         if not DOWNLOAD_SLOT.acquire(blocking=False):
             return
         ACTIVE.add(ident)
     threading.Thread(target=_cache_worker, args=(dict(entry),), daemon=True).start()
+
+
+def warm_cache() -> None:
+    """Prepare a small number of MOV videos for immediate HTML5 playback."""
+    cfg = settings()
+    if not cfg.get("online_cache_enabled", True) or shutil.which("ffmpeg") is None:
+        return
+    with LOCK:
+        catalog = read_json(CATALOG_FILE).get("sources", {})
+    for provider, target in (("apple", APPLE_WARM_TARGET), ("nasa", 2)):
+        if not cfg.get("online_sources", {}).get(provider, False):
+            continue
+        items = catalog.get(provider, {}).get("items", [])
+        candidates = [entry for entry in items if isinstance(entry, dict)
+                      and allowed_video_url(entry.get("remote_url"), provider)]
+        ready = sum(1 for entry in candidates if cached_file(entry.get("id", "")))
+        if ready >= target:
+            continue
+        for entry in candidates:
+            ident = entry.get("id", "")
+            if not isinstance(ident, str) or len(ident) != 24:
+                continue
+            if cached_file(ident) or CACHE_FAILED_UNTIL.get(ident, 0) > time.time():
+                continue
+            try_cache(entry)
+            return
 
 
 def clear_cache() -> int:
@@ -513,5 +589,6 @@ def clear_cache() -> int:
     for file in CACHE_FOLDER.glob("*.mp4"):
         if file.is_file() and not file.is_symlink() and file.stem not in ACTIVE:
             file.unlink()
+            file.with_suffix(".ready").unlink(missing_ok=True)
             count += 1
     return count
