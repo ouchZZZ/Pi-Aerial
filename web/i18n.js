@@ -27,6 +27,8 @@
     ['Видео','Videos'],
     ['Расположение OSD','OSD layout'],
     ['Положения OSD','OSD positions'],
+    ['Сетка и привязка к ней','Show grid and snap to it'],
+    ['Шаг сетки: 40 px на макете 1280 × 720. Отключите для свободного перемещения.','Grid spacing: 40 px at 1280 × 720. Turn off for free positioning.'],
     ['Одно постоянное','One fixed position'],
     ['Два, чередовать при смене видео','Two positions, alternate with each video'],
     ['Редактировать положение','Edit position'],
