@@ -160,6 +160,14 @@ function renderOnlineSources(){
   }
   $('onlineCacheEnabled').checked=!!status.cache?.enabled;
   $('onlineCacheLimit').value=Number(status.cache?.limit_gb||12);
+  $('onlineCacheLimit').max=Number(status.cache?.max_limit_gb||12);
+  const cache=status.cache||{};
+  const used=(Number(cache.used_bytes||0)/1073741824).toFixed(2);
+  const limit=Number(cache.limit_gb||12);
+  const state=!cache.enabled?'Выключена':cache.paused
+    ?(cache.pause_reason==='limit'?'Пауза: достигнут лимит кеша':'Пауза: мало свободного места')
+    :'Загрузка разрешена';
+  $('onlineCacheState').textContent=`Использовано ${used} из ${limit} ГБ · ${state}. Готовые ролики сохраняются.`;
 }
 function renderModules(){const list=$('moduleList');list.replaceChildren();for(const m of status.modules){const row=line(m.name||m.id,`${m.id} · v${m.version} · ${m.position||'top-right'}`);const controls=document.createElement('div');controls.className='inline-actions';const check=document.createElement('input');check.type='checkbox';check.checked=m.enabled;check.title='Модуль включён';check.addEventListener('change',async()=>{try{await api('/api/admin/modules/'+m.id+'/enabled',{method:'PUT',body:{enabled:check.checked}});toast('Настройка сохранена')}catch(e){check.checked=!check.checked;toast(e.message)}});controls.append(check);if(m.rollback_available){const back=textNode('button','Откатить');back.addEventListener('click',async()=>{if(!confirm('Вернуть предыдущую версию модуля?'))return;try{await api('/api/admin/modules/'+m.id+'/rollback',{method:'POST'});await load();toast('Модуль откатан')}catch(e){toast(e.message)}});controls.append(back)}row.append(controls);list.append(row);}}
 function setBusy(form,busy){const b=form.querySelector('button');b.disabled=busy;b.dataset.old=b.dataset.old||b.textContent;b.textContent=busy?'Обработка…':b.dataset.old;}
@@ -187,7 +195,8 @@ $('onlineRefresh').addEventListener('click',async()=>{
 });
 $('onlineCacheSave').addEventListener('click',async()=>{
   const cache_gb=Number($('onlineCacheLimit').value);
-  if(!Number.isInteger(cache_gb)||cache_gb<1||cache_gb>64){toast('Размер кеша: от 1 до 64 ГБ');return;}
+  const maximum=Number(status.cache?.max_limit_gb||12);
+  if(!Number.isInteger(cache_gb)||cache_gb<1||cache_gb>maximum){toast('Размер кеша: от 1 до '+maximum+' ГБ');return;}
   try{
     await api('/api/admin/config',{method:'PUT',body:{changes:{
       online_cache_enabled:$('onlineCacheEnabled').checked,online_cache_gb:cache_gb

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from threading import RLock
@@ -16,6 +17,9 @@ CURRENT_VERSION = (Path(__file__).resolve().parent.parent / 'VERSION').read_text
 REVISION_FILE = Path(__file__).resolve().parent.parent / 'GIT_REVISION'
 CURRENT_REVISION = REVISION_FILE.read_text(encoding='utf8').strip() if REVISION_FILE.is_file() else None
 LOCK = RLock()
+
+ONLINE_CACHE_RESERVE_GB = 5
+GIB = 1024 ** 3
 
 DEFAULTS = {
     'city': 'Саяногорск', 'latitude': 53.1000, 'longitude': 91.4000,
@@ -76,6 +80,16 @@ def settings() -> dict:
         return result
 
 
+def max_online_cache_gb() -> int:
+    """The cache maximum follows the storage device, not an arbitrary 64 GiB."""
+    try:
+        total_gb = shutil.disk_usage(DATA).total // GIB
+    except OSError:
+        return DEFAULTS['online_cache_gb']
+    # Preserve the old default for small development/test disks.
+    return max(DEFAULTS['online_cache_gb'], total_gb - ONLINE_CACHE_RESERVE_GB)
+
+
 def update_settings(new: dict) -> dict:
     allowed = set(DEFAULTS) - {'enabled_modules'}
     if set(new) - allowed:
@@ -96,8 +110,10 @@ def update_settings(new: dict) -> dict:
         raise ValueError('Неверные переключатели онлайн-источников')
     if not isinstance(result['online_cache_enabled'], bool):
         raise ValueError('Неверный режим кеширования')
-    if type(result['online_cache_gb']) is not int or not 1 <= result['online_cache_gb'] <= 64:
-        raise ValueError('Лимит кеша должен быть 1–64 ГБ')
+    cache_limit = result['online_cache_gb']
+    maximum = max_online_cache_gb()
+    if type(cache_limit) is not int or not 1 <= cache_limit <= maximum:
+        raise ValueError(f'Лимит кеша должен быть от 1 до {maximum} ГБ')
     for key in ('show_clock', 'show_date', 'show_weather', 'night_mode', 'clock_shift',
                 'local_videos_enabled'):
         if not isinstance(result[key], bool):
