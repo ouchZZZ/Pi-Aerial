@@ -64,9 +64,14 @@ const PiLayoutEditor=(()=>{
     selected=name;
     node('layoutBlock').value=name;
     for(const [key,item] of Object.entries(items))item.classList.toggle('selected',key===name);
-    const scale=active()[name]?.scale||1;
+    const current=active()[name]||{};
+    const scale=current.scale||1;
     node('layoutScale').value=Math.round(scale*100);
     node('layoutScaleValue').textContent=Math.round(scale*100)+'%';
+    node('layoutFont').value=current.font||'default';
+    node('layoutTextColor').value=current.color||'#ffffff';
+    node('layoutColorValue').textContent=current.color||translate('По умолчанию');
+    node('layoutColorReset').disabled=!current.color;
   }
   function apply(){
     if(!ready)return;
@@ -236,6 +241,29 @@ const PiLayoutEditor=(()=>{
       apply();
     });
     node('layoutBlock').addEventListener('change',e=>setSelected(e.target.value));
+    node('layoutFont').addEventListener('change',event=>{
+      if(!ready)return;
+      const font=event.target.value;
+      if(!['default','arial','verdana','trebuchet','georgia','times','courier'].includes(font))return;
+      if(font==='default'&&!active()[selected]?.font)return;
+      ensureGeometry();
+      if(font==='default')delete active()[selected].font;
+      else active()[selected].font=font;
+      apply();changed();
+    });
+    node('layoutTextColor').addEventListener('input',event=>{
+      if(!ready)return;
+      const color=event.target.value.toLowerCase();
+      if(!/^#[0-9a-f]{6}$/.test(color))return;
+      ensureGeometry();
+      active()[selected].color=color;
+      apply();changed();
+    });
+    node('layoutColorReset').addEventListener('click',()=>{
+      if(!ready||!active()[selected]?.color)return;
+      delete active()[selected].color;
+      apply();changed();
+    });
     node('layoutScale').addEventListener('input',event=>{
       if(!ready)return;
       ensureGeometry();
