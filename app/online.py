@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import ssl
 import threading
 import time
@@ -420,6 +421,7 @@ def _cache_worker(entry: dict) -> None:
         if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + 100 * 1024**2:
             return
         temp = CACHE_FOLDER / (ident + ".part")
+        muxed = CACHE_FOLDER / (ident + ".mux.mp4")
         final = CACHE_FOLDER / (ident + ".mp4")
         if final.exists():
             return
@@ -447,11 +449,32 @@ def _cache_worker(entry: dict) -> None:
             with temp.open("rb") as f:
                 header = f.read(12)
             if header[4:8] != b"ftyp":
-                raise ValueError("Ответ сервера не MP4")
-            os.replace(temp, final)
+                raise ValueError("Ответ сервера не содержит MP4/MOV")
+            is_mov = urllib.parse.urlsplit(entry["remote_url"]).path.lower().endswith(".mov")
+            if is_mov:
+                ffmpeg = shutil.which("ffmpeg")
+                if not ffmpeg:
+                    raise ValueError("Для кеширования MOV нужен ffmpeg; онлайн-поток доступен")
+                if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:
+                    raise ValueError("Не хватает места на безопасный ремультиплекс MOV")
+                # Copy the H.264 track into a fast-start MP4 container. No
+                # re-encoding or extra CPU-heavy transcoding on Raspberry Pi.
+                subprocess.run(
+                    [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                     "-i", str(temp), "-map", "0:v:0", "-an", "-c:v", "copy",
+                     "-movflags", "+faststart", str(muxed)],
+                    check=True, timeout=120, capture_output=True,
+                )
+                with muxed.open("rb") as remuxed:
+                    if remuxed.read(12)[4:8] != b"ftyp":
+                        raise ValueError("Ошибка при преобразовании MOV в MP4")
+                os.replace(muxed, final)
+            else:
+                os.replace(temp, final)
             _prune(max_bytes, ident)
         finally:
             temp.unlink(missing_ok=True)
+            muxed.unlink(missing_ok=True)
     except Exception as exc:
         print(f"[online] cannot cache {ident}: {exc}", flush=True)
     finally:
