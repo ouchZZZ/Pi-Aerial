@@ -169,12 +169,107 @@ function renderOnlineSources(){
     :'Загрузка разрешена';
   $('onlineCacheState').textContent=`Использовано ${used} из ${limit} ГБ · ${state}. Готовые ролики сохраняются.`;
 }
+let libraryLoading=false;
+async function loadLibrary(){
+  if(libraryLoading)return;
+  libraryLoading=true;
+  try{
+    const data=await api('/api/admin/online/library');
+    renderLibrary(Array.isArray(data.videos)?data.videos:[]);
+  }catch(e){
+    $('librarySummary').textContent='Не удалось получить список: '+e.message;
+    toast(e.message);
+  }finally{libraryLoading=false}
+}
+function openLibraryPreview(title,url){
+  const dialog=$('libraryPreviewDialog'),player=$('libraryPreviewPlayer');
+  $('libraryPreviewTitle').textContent=title;
+  player.src=url;
+  dialog.showModal();
+  player.play().catch(()=>{});
+}
+function renderLibrary(onlineVideos){
+  const onlineRoot=$('onlineLibraryList'),localRoot=$('localLibraryList');
+  onlineRoot.replaceChildren();
+  localRoot.replaceChildren();
+  const ready=onlineVideos.filter(v=>v.cached);
+  const deleted=onlineVideos.filter(v=>!v.cached);
+  $('librarySummary').textContent=
+    `Готово: ${ready.length} · удалено, но сохранено в истории: ${deleted.length} · всего на диске: ${progressSize(ready.reduce((sum,v)=>sum+Number(v.bytes||0),0))}`;
+  for(const v of onlineVideos){
+    const provider=v.provider==='apple'?'Apple Aerial':
+      v.provider==='nasa'?'NASA':v.provider;
+    const state=v.cached?'Готов к просмотру · '+progressSize(v.bytes):
+      'MP4 удалён · повторная загрузка заблокирована';
+    const row=line(v.name,provider+' · '+state);
+    if(v.description)row.firstChild.append(textNode('p',v.description,'library-description'));
+    const controls=document.createElement('div');controls.className='inline-actions library-actions';
+    if(v.cached){
+      const preview=textNode('button','Просмотр');
+      preview.addEventListener('click',()=>openLibraryPreview(
+        v.name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview'));
+      const remove=textNode('button','Удалить файл');
+      remove.addEventListener('click',async()=>{
+        if(!confirm('Удалить готовый MP4? Запрет повторной загрузки останется.'))return;
+        remove.disabled=true;
+        try{
+          await api('/api/admin/online/library/'+encodeURIComponent(v.id),{method:'DELETE'});
+          toast('Файл удалён. Повторная загрузка по-прежнему заблокирована.');
+          await load();await loadLibrary();
+        }catch(e){toast(e.message);remove.disabled=false}
+      });
+      controls.append(preview,remove);
+    }else{
+      if(v.can_redownload){
+        const unlock=textNode('button','Разрешить повторную загрузку');
+        unlock.addEventListener('click',async()=>{
+          if(!confirm('Снять блокировку и разрешить снова скачать этот ролик?'))return;
+          unlock.disabled=true;
+          try{
+            await api('/api/admin/online/library/'+encodeURIComponent(v.id)+'/redownload',{method:'POST'});
+            toast('Блокировка снята. Загрузка начнётся по общей очереди.');
+            await load();await loadLibrary();
+          }catch(e){toast(e.message);unlock.disabled=false}
+        });
+        controls.append(unlock);
+      }else{
+        controls.append(textNode('small','Ролика уже нет в текущем каталоге'));
+      }
+    }
+    row.append(controls);onlineRoot.append(row);
+  }
+  if(!onlineVideos.length)onlineRoot.append(textNode('p','Пока нет скачанных роликов.','hint'));
+  for(const v of status?.videos||[]){
+    const row=line(v.name,'Локальная загрузка · '+progressSize(v.bytes));
+    const controls=document.createElement('div');controls.className='inline-actions library-actions';
+    const preview=textNode('button','Просмотр');
+    preview.addEventListener('click',()=>openLibraryPreview(v.name,v.url));
+    const remove=textNode('button','Удалить файл');
+    remove.addEventListener('click',async()=>{
+      if(!confirm('Удалить загруженный вами файл с карты?'))return;
+      remove.disabled=true;
+      try{
+        await api('/api/admin/videos/'+encodeURIComponent(v.name),{method:'DELETE'});
+        toast('Файл удалён');await load();await loadLibrary();
+      }catch(e){toast(e.message);remove.disabled=false}
+    });
+    controls.append(preview,remove);row.append(controls);localRoot.append(row);
+  }
+  if(!(status?.videos||[]).length)localRoot.append(textNode('p','Своих готовых файлов пока нет.','hint'));
+}
+$('libraryRefresh').addEventListener('click',async()=>{await load();await loadLibrary()});
+$('libraryPreviewClose').addEventListener('click',()=>$('libraryPreviewDialog').close());
+$('libraryPreviewDialog').addEventListener('close',()=>{
+  const player=$('libraryPreviewPlayer');
+  player.pause();player.removeAttribute('src');player.load();
+});
+
 function renderModules(){const list=$('moduleList');list.replaceChildren();for(const m of status.modules){const row=line(m.name||m.id,`${m.id} · v${m.version} · ${m.position||'top-right'}`);const controls=document.createElement('div');controls.className='inline-actions';const check=document.createElement('input');check.type='checkbox';check.checked=m.enabled;check.title='Модуль включён';check.addEventListener('change',async()=>{try{await api('/api/admin/modules/'+m.id+'/enabled',{method:'PUT',body:{enabled:check.checked}});toast('Настройка сохранена')}catch(e){check.checked=!check.checked;toast(e.message)}});controls.append(check);if(m.rollback_available){const back=textNode('button','Откатить');back.addEventListener('click',async()=>{if(!confirm('Вернуть предыдущую версию модуля?'))return;try{await api('/api/admin/modules/'+m.id+'/rollback',{method:'POST'});await load();toast('Модуль откатан')}catch(e){toast(e.message)}});controls.append(back)}row.append(controls);list.append(row);}}
 function setBusy(form,busy){const b=form.querySelector('button');b.disabled=busy;b.dataset.old=b.dataset.old||b.textContent;b.textContent=busy?'Обработка…':b.dataset.old;}
 async function upload(formId,inputId,url){const form=$(formId);const file=$(inputId).files[0];if(!file)return;const data=new FormData();data.append('file',file);setBusy(form,true);try{const res=await api(url,{method:'POST',body:data,upload:true});toast(res.message||'Файл принят');form.reset();await load();}catch(e){toast(e.message)}finally{setBusy(form,false)}}
 $('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{const a=await api('/api/auth/login',{method:'POST',body:{password:$('password').value}});csrf=a.csrf;$('password').value='';$('loginError').textContent='';togglePanel(true);await load();}catch(err){$('loginError').textContent=err.message;}});
 $('logout').addEventListener('click',async()=>{try{await api('/api/auth/logout',{method:'POST'});}finally{csrf='';togglePanel(false)}});
-document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===tab));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='tab-'+tab.dataset.tab));if(tab.dataset.tab==='videos')refreshVideoProgress().catch(e=>console.warn('Прогресс видео:',e));}));
+document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===tab));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='tab-'+tab.dataset.tab));if(tab.dataset.tab==='videos')refreshVideoProgress().catch(e=>console.warn('Прогресс видео:',e));if(tab.dataset.tab==='library')load().then(loadLibrary).catch(e=>toast(e.message));}));
 $('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget;const changes={};for(const name of ['show_clock','show_date','show_weather','clock_shift','night_mode'])changes[name]=f.elements[name].checked;for(const name of ['city','timezone','time_format','clock_position','video_mode'])changes[name]=f.elements[name].value;for(const name of ['latitude','longitude','night_opacity'])changes[name]=Number(f.elements[name].value);for(const name of ['video_interval_minutes','night_start','night_end'])changes[name]=Number(f.elements[name].value);changes.night_opacity/=100;try{await api('/api/admin/config',{method:'PUT',body:{changes}});$('settingsMessage').textContent='Сохранено';toast('Настройки применены');await load();}catch(e){toast(e.message)}});
 $('settingsForm').elements.night_opacity.addEventListener('input',updateNightValue);
 $('reloadDisplay').addEventListener('click',async()=>{try{await api('/api/admin/display/reload',{method:'POST'});toast('Экран перезагрузится при следующей проверке')}catch(e){toast(e.message)}});
@@ -251,3 +346,8 @@ setInterval(()=>{
     refreshVideoProgress().catch(e=>console.warn('Прогресс видео:',e));
   }
 },2000);
+setInterval(()=>{
+  if(!$('panel').hidden && document.querySelector('.tab.active')?.dataset.tab==='library'){
+    load().then(loadLibrary).catch(e=>console.warn('Список готовых видео:',e));
+  }
+},15000);
