@@ -6,7 +6,8 @@ const PiLayoutEditor=(()=>{
   const captions={clock:'Часы',weather:'Погода',calendar:'Календарь',footer:'Описание'};
   const fallbacks={clock:[6,10],weather:[6,36],calendar:[74,10],footer:[5,92]};
   const items={};
-  let started=false,ready=false,draft={},selected='clock',drag=null,services=null;
+  let started=false,ready=false,drafts=[{},{}],mode='alternate',position=0,selected='clock',drag=null,services=null;
+  const active=()=>drafts[position];
   const node=id=>document.getElementById(id);
   const round=n=>Math.round(n*100)/100;
   const clamp=(n,min,max)=>Math.min(max,Math.max(min,n));
@@ -31,7 +32,7 @@ const PiLayoutEditor=(()=>{
     return result;
   }
   function ensureGeometry(){
-    if(!Object.keys(draft).length)draft=geometry();
+    if(!Object.keys(active()).length)drafts[position]=geometry();
   }
   function setMessage(message){node('layoutMessage').textContent=translate(message);}
   function setSelected(name){
@@ -39,21 +40,24 @@ const PiLayoutEditor=(()=>{
     selected=name;
     node('layoutBlock').value=name;
     for(const [key,item] of Object.entries(items))item.classList.toggle('selected',key===name);
-    const scale=draft[name]?.scale||1;
+    const scale=active()[name]?.scale||1;
     node('layoutScale').value=Math.round(scale*100);
     node('layoutScaleValue').textContent=Math.round(scale*100)+'%';
   }
   function apply(){
     if(!ready)return;
-    if(!Object.keys(draft).length){
-      // Restore all legacy anchors while previewing a reset.
-      screen().getElementById('clockCard').className='clock-card';
-      screen().getElementById('weatherCard').className='weather-card';
-      screen().getElementById('calendarCard').className='calendar-card osd-right';
-      screen().getElementById('clipFooter').className='footer';
-    }
-    frame().contentWindow.applyOsdLayout(draft);
+    // The preview uses the real legacy position as a starting point for each
+    // layout; the active custom geometry, if any, is applied on top.
+    frame().contentWindow.previewOsdPreset(position);
+    frame().contentWindow.applyOsdLayout(active());
     render();
+  }
+  function updatePositionControls(){
+    node('layoutMode').value=mode;
+    if(mode==='single')position=0;
+    node('layoutPositionField').hidden=mode==='single';
+    node('layoutPosition').value=String(position);
+    apply();
   }
   function render(){
     if(!ready)return;
@@ -69,7 +73,7 @@ const PiLayoutEditor=(()=>{
     setSelected(selected);
   }
   function fitPosition(name){
-    const current=draft[name],bounds=screen().getElementById(ids[name]).getBoundingClientRect();
+    const current=active()[name],bounds=screen().getElementById(ids[name]).getBoundingClientRect();
     current.x=round(clamp(current.x,0,Math.max(0,100-bounds.width/FRAME_WIDTH*100)));
     current.y=round(clamp(current.y,0,Math.max(0,100-bounds.height/FRAME_HEIGHT*100)));
   }
@@ -82,7 +86,7 @@ const PiLayoutEditor=(()=>{
     const size=item.getBoundingClientRect();
     drag={name,pointer:event.pointerId,x:event.clientX,y:event.clientY,
       w:Math.max(1,size.width),h:Math.max(1,size.height),
-      start:copy(draft[name]),
+      start:copy(active()[name]),
       resize:event.target.classList.contains('layout-item-resize')};
     item.setPointerCapture(event.pointerId);
     item.classList.add('dragging');
@@ -90,7 +94,7 @@ const PiLayoutEditor=(()=>{
   function moveDrag(event){
     if(!drag||drag.pointer!==event.pointerId)return;
     const dx=event.clientX-drag.x,dy=event.clientY-drag.y;
-    const current=draft[drag.name],start=drag.start;
+    const current=active()[drag.name],start=drag.start;
     if(drag.resize){
       const multiplier=Math.max(.1,Math.max(1+dx/drag.w,1+dy/drag.h));
       current.scale=round(clamp(start.scale*multiplier,.4,2.5));
@@ -133,10 +137,10 @@ const PiLayoutEditor=(()=>{
         if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;
         event.preventDefault();ensureGeometry();setSelected(name);
         const delta=event.shiftKey?1:0.25;
-        if(event.key==='ArrowLeft')draft[name].x-=delta;
-        if(event.key==='ArrowRight')draft[name].x+=delta;
-        if(event.key==='ArrowUp')draft[name].y-=delta;
-        if(event.key==='ArrowDown')draft[name].y+=delta;
+        if(event.key==='ArrowLeft')active()[name].x-=delta;
+        if(event.key==='ArrowRight')active()[name].x+=delta;
+        if(event.key==='ArrowUp')active()[name].y-=delta;
+        if(event.key==='ArrowDown')active()[name].y+=delta;
         apply();fitPosition(name);apply();changed();
       });
       items[name]=item;
@@ -149,10 +153,16 @@ const PiLayoutEditor=(()=>{
     render();
   }
   function onLoad(){
-    if(!frame().contentWindow.applyOsdLayout)return;
+    if(!frame().contentWindow.applyOsdLayout||!frame().contentWindow.previewOsdPreset)return;
     ready=true;
-    draft=copy(services.status.config.osd_layout||{});
-    apply();resizeFrame();
+    drafts=[
+      copy(services.status.config.osd_layout||{}),
+      copy(services.status.config.osd_layout_alt||{}),
+    ];
+    mode=services.status.config.osd_layout_mode==='single'?'single':'alternate';
+    position=0;
+    updatePositionControls();
+    resizeFrame();
     // API weather text arrives asynchronously after the iframe's load event.
     setTimeout(render,800);
     setMessage('Изменения ещё не сохранены');
@@ -161,8 +171,15 @@ const PiLayoutEditor=(()=>{
     if(!ready)return;
     const button=node('layoutSave');button.disabled=true;
     try{
-      const result=await services.api('/api/admin/config',{method:'PUT',body:{changes:{osd_layout:copy(draft)}}});
+      const changes={
+        osd_layout_mode:mode,
+        osd_layout:copy(drafts[0]),
+        osd_layout_alt:copy(drafts[1]),
+      };
+      const result=await services.api('/api/admin/config',{method:'PUT',body:{changes}});
       services.status.config.osd_layout=copy(result.config.osd_layout);
+      services.status.config.osd_layout_alt=copy(result.config.osd_layout_alt);
+      services.status.config.osd_layout_mode=result.config.osd_layout_mode;
       await services.load();
       setMessage('Расположение сохранено');
       services.toast('Расположение сохранено');
@@ -171,15 +188,26 @@ const PiLayoutEditor=(()=>{
   }
   function reset(){
     if(!ready)return;
-    draft={};apply();setSelected(selected);changed();
+    drafts=[{},{}];mode='alternate';position=0;
+    updatePositionControls();setSelected(selected);changed();
   }
   function init(){
     addHandles();
+    node('layoutMode').addEventListener('change',e=>{
+      if(!ready)return;
+      mode=e.target.value==='single'?'single':'alternate';
+      updatePositionControls();changed();
+    });
+    node('layoutPosition').addEventListener('change',e=>{
+      if(!ready||mode==='single')return;
+      position=e.target.value==='1'?1:0;
+      apply();
+    });
     node('layoutBlock').addEventListener('change',e=>setSelected(e.target.value));
     node('layoutScale').addEventListener('input',event=>{
       if(!ready)return;
       ensureGeometry();
-      draft[selected].scale=Number(event.target.value)/100;
+      active()[selected].scale=Number(event.target.value)/100;
       apply();fitPosition(selected);apply();changed();
     });
     node('layoutSave').addEventListener('click',save);
