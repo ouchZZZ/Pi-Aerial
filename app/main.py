@@ -144,11 +144,11 @@ def online_video(clip_id: str, request: Request):
         path.touch()  # actual playback is the cache LRU access, not the status poll
         return FileResponse(path, media_type='video/mp4',
                             headers={'Cache-Control': 'private, max-age=3600'})
-    if entry['provider'] == 'apple':
+    if online.requires_remux(entry):
         # Never masquerade QuickTime MOV bytes as HTML5 MP4.
         # Start bounded remux preparation; the clip joins the playlist once ready.
         online.try_cache(entry)
-        raise HTTPException(503, 'Apple Aerial: ролик подготавливается в кеше MP4',
+        raise HTTPException(503, 'MOV: ролик подготавливается в кеше MP4',
                             headers={'Retry-After': '30'})
     requested_range = request.headers.get('range')
     try:
