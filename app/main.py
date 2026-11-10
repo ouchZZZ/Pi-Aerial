@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress
+from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress, osd_fonts
 from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, atomic_json, init_data,
                       read_json, safe_id, settings, update_settings)
 
@@ -393,6 +393,12 @@ def admin_timezones(_: None = Depends(auth.require_admin)):
     """IANA zones installed on the device; choices match backend validation."""
     zones = sorted(available_timezones())
     return {'timezones': zones or ['UTC', 'Europe/Moscow']}
+
+
+@app.get('/api/admin/osd/fonts')
+def admin_osd_fonts(_: None = Depends(auth.require_admin)):
+    """Installed font-family names, not font files or remote webfonts."""
+    return {'fonts': osd_fonts.installed_font_families()}
 
 
 @app.put('/api/admin/config')

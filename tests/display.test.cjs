@@ -9,7 +9,7 @@ const root = path.join(__dirname, '..');
 const displayJS = fs.readFileSync(path.join(root, 'web/display.js'), 'utf8');
 const displayCSS = fs.readFileSync(path.join(root, 'web/display.css'), 'utf8');
 
-function makeHarness() {
+function makeHarness(search = '') {
   const elements = new Map();
   const timers = [];
   const intervals = [];
@@ -19,7 +19,10 @@ function makeHarness() {
       let content = '';
       const listeners = new Map();
       const item = {
-        id, style: {}, hidden: false, className: '', writes: 0,
+        id, style: {
+          setProperty(name, value) { this[name] = value; },
+          removeProperty(name) { delete this[name]; },
+        }, hidden: false, className: '', writes: 0,
         classList: { add() {}, remove() {} },
         addEventListener(name, callback) { listeners.set(name, callback); },
         dispatch(name) { listeners.get(name)?.(); },
@@ -86,7 +89,7 @@ function makeHarness() {
       videos: [...publicState.videos], modules: [...publicState.modules],
     })}),
     console: {error: (...items) => errors.push(items), warn() {}},
-    location: {reload() {}},
+    location: {reload() {}, search},
   };
   vm.createContext(context);
   vm.runInContext(displayJS, context, {filename: 'display.js'});
@@ -107,11 +110,22 @@ test('idle background has no perpetually running CSS animation', () => {
   assert.match(displayCSS, /#video\.ready/); // Video fade-in remains available
 });
 
+test('layout preview updates OSD but never loads video or starts player polling', async () => {
+  const h = makeHarness('?layout_preview=1');
+  await settle();
+  assert.ok(h.bodyClasses.has('layout-preview'));
+  assert.ok(h.intervals.some(timer => timer.ms === 10000));
+  assert.ok(!h.intervals.some(timer => timer.ms === 30000 || timer.ms === 3000));
+  h.publicState.videos = [{url: '/media/expensive-video.mp4'}];
+  await h.context.poll();
+  assert.equal(h.video.loadCalls, 0);
+});
+
 test('night shade covers all OSD layers and remains separate from one-shot hiding', () => {
   const zIndex = selector => Number(displayCSS.match(new RegExp(selector + '\\{[^}]*z-index:(\\d+)'))[1]);
   assert.ok(zIndex('#nightShade') > zIndex('\\.module-layer'));
   assert.ok(zIndex('#nightShade') > zIndex('\\.calendar-card'));
-  assert.match(displayCSS, /body\.playing-once :is\(#shade,#clockCard,#calendarCard,#moduleLayer,#clipFooter\)\{display:none\}/);
+  assert.match(displayCSS, /body\.playing-once :is\(#shade,#clockCard,#weatherCard,#calendarCard,#moduleLayer,#clipFooter\)\{display:none\}/);
 });
 
 test('one-shot skips the rotation timer and restores OSD and playlist on end or failure', async () => {
@@ -241,6 +255,132 @@ test('both OSD blocks alternate sides when a video starts playing', async () => 
     assert.equal(isRight('calendarCard'), !right);
     if (index < 2) h.video.dispatch('ended');
   }
+});
+
+test('single-position OSD layout remains fixed when videos change', async () => {
+  const h = await ready();
+  const layout = {
+    clock: {x: 12, y: 8, scale: 1.2},
+    weather: {x: 50, y: 75, scale: 0.8},
+    calendar: {x: 70, y: 7, scale: 1},
+    footer: {x: 9, y: 92, scale: 0.7},
+  };
+  h.publicState.settings.osd_layout_mode = 'single';
+  h.publicState.settings.osd_layout = layout;
+  await h.context.poll();
+  assert.ok(h.bodyClasses.has('custom-osd-layout'));
+  assert.equal(h.elements.get('clockCard').style.left, '12%');
+  assert.equal(h.elements.get('weatherCard').style.top, '75%');
+  assert.equal(h.elements.get('weatherCard').style.transform, 'scale(0.8)');
+  assert.equal(h.elements.get('calendarCard').style.left, '70%');
+  h.publicState.videos = [{url:'/media/a.mp4'},{url:'/media/b.mp4'}];
+  await h.context.poll();
+  h.video.pending.at(-1).resolve();
+  await settle();
+  h.video.dispatch('ended');
+  h.video.pending.at(-1).resolve();
+  await settle();
+  assert.ok(!h.elements.get('clockCard').className.includes('osd-right'));
+  assert.ok(!h.elements.get('weatherCard').className.includes('osd-right'));
+  h.publicState.settings.osd_layout = {};
+  await h.context.poll();
+  assert.ok(!h.bodyClasses.has('custom-osd-layout'));
+  assert.equal(h.elements.get('weatherCard').style.left, '');
+});
+
+test('alternating custom OSD layouts cycle on every successful video start', async () => {
+  const h=await ready();
+  const first={
+    clock:{x:8,y:10,scale:1},weather:{x:5,y:37,scale:1},
+    calendar:{x:72,y:10,scale:1},footer:{x:5,y:90,scale:1},
+  };
+  const second={
+    clock:{x:58,y:8,scale:.75},weather:{x:52,y:45,scale:1.25},
+    calendar:{x:5,y:14,scale:1.1},footer:{x:35,y:93,scale:.8},
+  };
+  h.publicState.settings.osd_layout_mode='alternate';
+  h.publicState.settings.osd_layout=first;
+  h.publicState.settings.osd_layout_alt=second;
+  h.publicState.videos=[
+    {id:'one',url:'/media/one.mp4'},
+    {id:'two',url:'/media/two.mp4'},
+    {id:'three',url:'/media/three.mp4'},
+  ];
+  await h.context.poll();
+  assert.equal(h.elements.get('clockCard').style.left,'8%');
+  for(const [index,expected] of [first,second,first].entries()){
+    h.video.pending[index].resolve();
+    await settle();
+    assert.equal(h.elements.get('clockCard').style.left,expected.clock.x+'%');
+    assert.equal(h.elements.get('weatherCard').style.top,expected.weather.y+'%');
+    assert.equal(h.elements.get('calendarCard').style.transform,'scale('+expected.calendar.scale+')');
+    await h.context.poll();
+    assert.equal(h.elements.get('clockCard').style.left,expected.clock.x+'%');
+    if(index<2)h.video.dispatch('ended');
+  }
+});
+
+test('font and color follow each OSD layout without leaking between blocks', async () => {
+  const h=await ready();
+  const first={
+    clock:{x:8,y:10,scale:1,font:'georgia',color:'#ffcc00'},
+    weather:{x:5,y:37,scale:1,font:'courier',color:'#aabbcc'},
+    calendar:{x:72,y:10,scale:1},footer:{x:5,y:90,scale:1},
+  };
+  const second={
+    clock:{x:58,y:8,scale:.75,font:'arial',color:'#112233'},
+    weather:{x:52,y:45,scale:1},calendar:{x:5,y:14,scale:1},
+    footer:{x:35,y:93,scale:.8,font:'trebuchet',color:'#334455'},
+  };
+  h.publicState.settings.osd_layout_mode='alternate';
+  h.publicState.settings.osd_layout=first;
+  h.publicState.settings.osd_layout_alt=second;
+  h.publicState.videos=[{url:'/media/a'},{url:'/media/b'}];
+  await h.context.poll();
+  const clock=h.elements.get('clockCard').style;
+  const weather=h.elements.get('weatherCard').style;
+  const footer=h.elements.get('clipFooter').style;
+  assert.match(clock.fontFamily,/Georgia/);
+  assert.equal(clock.color,'#ffcc00');
+  assert.equal(clock['--osd-text-color'],'#ffcc00');
+  assert.match(weather.fontFamily,/Courier New/);
+  assert.equal(weather['--osd-text-color'],'#aabbcc');
+  assert.equal(footer.color,'');
+  h.video.pending[0].resolve();
+  await settle();
+  h.video.dispatch('ended');
+  h.video.pending[1].resolve();
+  await settle();
+  assert.match(clock.fontFamily,/Arial/);
+  assert.equal(clock.color,'#112233');
+  assert.equal(weather.fontFamily,'');
+  assert.equal(weather.color,'');
+  assert.equal(weather['--osd-text-color'],undefined);
+  assert.match(footer.fontFamily,/Trebuchet MS/);
+  assert.equal(footer.color,'#334455');
+  h.publicState.settings.osd_layout={};
+  h.publicState.settings.osd_layout_alt={};
+  await h.context.poll();
+  assert.equal(clock.fontFamily,'');
+  assert.equal(clock.color,'');
+  assert.equal(clock['--osd-text-color'],undefined);
+  assert.equal(footer.fontFamily,'');
+  assert.equal(footer.color,'');
+});
+
+test('single-position mode uses the default first position without rotating', async () => {
+  const h=await ready();
+  h.publicState.settings.osd_layout_mode='single';
+  h.publicState.videos=[{url:'/media/a'},{url:'/media/b'}];
+  await h.context.poll();
+  h.video.pending[0].resolve();
+  await settle();
+  assert.equal(h.elements.get('clockCard').className,'clock-card');
+  h.video.dispatch('ended');
+  h.video.pending[1].resolve();
+  await settle();
+  assert.equal(h.elements.get('clockCard').className,'clock-card');
+  assert.equal(h.elements.get('calendarCard').className,'calendar-card osd-right');
 });
 
 test('calendar shows leading dates, holidays and transferred days off', async () => {

@@ -6,6 +6,8 @@ let osdRight=false, hasPlayedVideo=false;
 let playingOnce=false, pollingDisplayRequest=false;
 const rejectedUntil=new Map();
 const video=$('video');
+const layoutPreview=Boolean(location.search?.includes('layout_preview=1'));
+if(layoutPreview)document.body.classList.add('layout-preview');
 const wxTextRu={0:'Ясно',1:'Преимущественно ясно',2:'Переменная облачность',3:'Пасмурно',45:'Туман',48:'Туман',51:'Морось',53:'Морось',55:'Морось',61:'Небольшой дождь',63:'Дождь',65:'Сильный дождь',71:'Небольшой снег',73:'Снег',75:'Сильный снег',80:'Ливни',81:'Ливни',82:'Сильные ливни',95:'Гроза',96:'Гроза',99:'Гроза'};
 
 const wxTextEn={0:'Clear',1:'Mostly clear',2:'Partly cloudy',3:'Overcast',45:'Fog',48:'Fog',51:'Drizzle',53:'Drizzle',55:'Drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',71:'Light snow',73:'Snow',75:'Heavy snow',80:'Showers',81:'Showers',82:'Heavy showers',95:'Thunderstorm',96:'Thunderstorm',99:'Thunderstorm'};
@@ -86,7 +88,7 @@ function drawTime(){
   if(c.show_date)drawCalendar(now,c.timezone);
   setText('city',displayLanguage()==='en'&&c.city==='Москва'?'Moscow':(c.city||''));
   const night=c.night_mode&&(c.night_start<=c.night_end?(hour>=c.night_start&&hour<c.night_end):(hour>=c.night_start||hour<c.night_end));
-  setStyle('nightShade','opacity',night?String(1-c.night_opacity):'0');
+  setStyle('nightShade','opacity',night&&!layoutPreview?String(1-c.night_opacity):'0');
 }
 const windSpeedFor=()=>new Intl.NumberFormat(localeName(),{maximumFractionDigits:1});
 let forecastMarkup='';
@@ -115,7 +117,8 @@ function showWeather(){
   $('forecast').setAttribute?.('aria-label',displayText('Прогноз на неделю','Weekly forecast'));
   setHidden('clock',!c.show_clock);
   setHidden('calendarCard',!c.show_date);
-  setHidden('clockCard',!c.show_clock&&!c.show_weather);
+  setHidden('clockCard',!c.show_clock);
+  setHidden('weatherCard',!c.show_weather);
   setHidden('city',!c.show_weather);
   setHidden('weather',!c.show_weather);
   showForecast(w,c);
@@ -259,14 +262,73 @@ function renderModules(){
   }
 }
 function sendModuleData(frame){frame.contentWindow?.postMessage({type:'aerial:data',config:state?.settings,weather:state?.weather,time:Date.now()},'*');}
-function renderOsdPosition(){
-  const sideClass=osdRight?' osd-right':'';
-  const positionClass='clock-card'+sideClass;
-  const calendarClass='calendar-card'+(osdRight?'':' osd-right');
+const osdBlocks={clock:'clockCard',weather:'weatherCard',calendar:'calendarCard',footer:'clipFooter'};
+// Explicit font stacks avoid network font downloads and are safe on the Pi.
+const osdFonts={
+  default:'',
+  arial:'Arial,"Liberation Sans",sans-serif',
+  verdana:'Verdana,"DejaVu Sans",sans-serif',
+  trebuchet:'"Trebuchet MS","DejaVu Sans",sans-serif',
+  georgia:'Georgia,"DejaVu Serif",serif',
+  times:'"Times New Roman","Liberation Serif",serif',
+  courier:'"Courier New","Liberation Mono",monospace'
+};
+function osdFontStack(selection){
+  if(Object.prototype.hasOwnProperty.call(osdFonts,selection))return osdFonts[selection];
+  if(typeof selection==='string'&&selection.startsWith('installed:')){
+    const family=selection.slice('installed:'.length);
+    if(family&&family.length<=160&&[...family].every(ch=>ch.charCodeAt(0)>31&&ch.charCodeAt(0)!==127)){
+      // JSON quoting also escapes literal quote/backslash characters for CSS.
+      return JSON.stringify(family)+',sans-serif';
+    }
+  }
+  return '';
+}
+function applyOsdLayout(layout){
+  const custom=Boolean(layout&&Object.keys(layout).length);
+  document.body.classList[custom?'add':'remove']('custom-osd-layout');
+  for(const [name,id] of Object.entries(osdBlocks)){
+    const node=$(id),geometry=custom?layout[name]:null;
+    if(!node)continue;
+    node.style.left=geometry?geometry.x+'%':'';
+    node.style.top=geometry?geometry.y+'%':'';
+    node.style.right=geometry?'auto':'';
+    node.style.bottom=geometry?'auto':'';
+    node.style.transform=geometry?'scale('+geometry.scale+')':'';
+    const font=geometry?.font;
+    node.style.fontFamily=osdFontStack(font);
+    node.style.color=geometry?.color||'';
+    // Descendant labels otherwise have hard-coded colors; preserve their
+    // existing defaults unless an explicit color is selected for this block.
+    if(geometry?.color)node.style.setProperty('--osd-text-color',geometry.color);
+    else node.style.removeProperty('--osd-text-color');
+  }
+}
+function setOsdSideClasses(right){
+  const sideClass=right?' osd-right':'';
+  const calendarClass='calendar-card'+(!right?' osd-right':'');
   if($('calendarCard').className!==calendarClass)$('calendarCard').className=calendarClass;
-  if($('clockCard').className!==positionClass)$('clockCard').className=positionClass;
+  for(const [id,base] of [['clockCard','clock-card'],['weatherCard','weather-card']]){
+    const name=base+sideClass;
+    if($(id).className!==name)$(id).className=name;
+  }
   const footerClass='footer'+sideClass;
   if($('clipFooter').className!==footerClass)$('clipFooter').className=footerClass;
+}
+// The editor uses this to preview either of the original side presets without
+// modifying persisted settings or starting another video player.
+function previewOsdPreset(index){
+  if(!layoutPreview)return;
+  setOsdSideClasses(index===1);
+  applyOsdLayout({});
+}
+function renderOsdPosition(){
+  const settings=state?.settings||{};
+  const second=settings.osd_layout_mode!=='single'&&osdRight;
+  const layout=(second?settings.osd_layout_alt:settings.osd_layout)||{};
+  const custom=Boolean(Object.keys(layout).length);
+  setOsdSideClasses(second&&!custom);
+  applyOsdLayout(layout);
 }
 async function poll(){
   try{
@@ -286,8 +348,8 @@ async function poll(){
     renderOsdPosition();
     drawTime();
     showWeather();
-    if(!playingOnce&&(first||shouldChange))changeVideo();
-    if(first||oldIds!==newIds)renderModules();
+    if(!layoutPreview&&!playingOnce&&(first||shouldChange))changeVideo();
+    if(!layoutPreview&&(first||oldIds!==newIds))renderModules();
     // Preserve the 30-second widget heartbeat for third-party modules.
     for(const frame of $('moduleLayer').querySelectorAll('iframe'))sendModuleData(frame);
   }catch(e){console.warn('Pi Aerial: status unavailable',e);}
@@ -306,6 +368,8 @@ video.addEventListener('timeupdate',()=>renderClipDescription(video.currentTime)
 video.addEventListener('ended',changeVideo);
 video.addEventListener('error',()=>reportPlaybackFailure(playAttempt,video.error));
 setInterval(drawTime,10000);
-setInterval(poll,30000);
-setInterval(pollDisplayRequest,3000);
+if(!layoutPreview){
+  setInterval(poll,30000);
+  setInterval(pollDisplayRequest,3000);
+}
 poll();

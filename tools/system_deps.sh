@@ -8,6 +8,7 @@ packages=(
   chromium
   curl
   ffmpeg
+  fontconfig
   git
   labwc
   openssh-client

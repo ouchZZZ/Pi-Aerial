@@ -34,3 +34,43 @@
 .weather-map[hidden]{display:none}
 #locationStatus{margin:8px 0 14px;min-height:1.5em}
 @media(max-width:750px){.language-picker span{display:none}.header-right{flex-wrap:wrap}.weather-map{height:265px;min-height:265px}}
+
+/* Drag-and-resize OSD editor (screen preview stays isolated from admin styling). */
+.layout-editor{max-width:1100px}
+.layout-controls{display:flex;align-items:end;flex-wrap:wrap;gap:18px;margin-bottom:18px}
+.layout-controls label{margin:0;min-width:180px}
+.layout-controls label:nth-child(2){min-width:220px;flex:1}
+.layout-controls output{float:right;font-weight:750;color:#167c90}
+.layout-stage{position:relative;aspect-ratio:16/9;width:100%;overflow:hidden;border-radius:13px;background:#0a1b28;touch-action:none;box-shadow:inset 0 0 0 1px #24495c}
+/* Grid stays inside the admin preview: 32 columns × 18 rows, i.e. 40px cells at 1280×720. */
+.layout-grid-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:4px 0 15px}
+.layout-grid-controls .hint{margin:0}
+.layout-grid-toggle{display:inline-flex!important;align-items:center;gap:8px;margin:0!important;font-weight:650!important;cursor:pointer}
+.layout-grid-toggle input{accent-color:#087f96;width:17px;height:17px}
+.layout-stage.show-grid:after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+  background-image:linear-gradient(to right,#d9f4ff44 1px,transparent 1px),linear-gradient(to bottom,#d9f4ff44 1px,transparent 1px);
+  background-size:3.125% 5.55555556%;background-position:0 0}
+.layout-stage iframe{position:absolute;left:0;top:0;width:1280px;height:720px;border:0;pointer-events:none;transform-origin:top left}
+.layout-overlay{position:absolute;inset:0;z-index:2;pointer-events:none}
+.layout-item{position:absolute;box-sizing:border-box;border:2px dashed #bfeefd;border-radius:4px;background:#01a6d00b;pointer-events:auto;cursor:grab;touch-action:none;outline:0}
+.layout-item:focus,.layout-item.selected{border:2px solid #fce386;background:#e6ae390c;z-index:2}
+.layout-item.dragging{cursor:grabbing}
+.layout-item-label{position:absolute;left:-2px;top:-24px;white-space:nowrap;font:600 12px/20px Inter,Arial,sans-serif;background:#092d42;color:#fff;border-radius:5px 5px 0 0;padding:1px 8px;pointer-events:none}
+.layout-item-resize{position:absolute;width:22px;height:22px;right:-7px;bottom:-7px;border:2px solid #18394b;border-radius:5px;background:#fce386;cursor:nwse-resize;touch-action:none}
+.layout-item-resize:after{content:'↘';position:absolute;inset:0;text-align:center;line-height:18px;color:#102d3b;font-size:13px}
+.layout-item[aria-disabled="true"]{display:none}
+@media(max-width:750px){.layout-editor{padding:12px}.layout-item-label{font-size:10px;top:-19px;line-height:16px}.layout-item-resize{width:18px;height:18px}}
+
+#layoutPositionField[hidden]{display:none}
+.layout-controls select{min-width:180px}
+
+/* Per-widget typography controls in the OSD editor. */
+.layout-font-controls{display:flex;align-items:end;flex-wrap:wrap;gap:14px;margin:4px 0}
+.layout-font-controls label{display:flex;flex-direction:column;align-items:flex-start;gap:7px;margin:0;min-width:140px}
+.layout-font-controls label:first-child{min-width:220px}
+.layout-font-controls select{min-width:210px;margin:0!important}
+.layout-font-controls input[type=color]{display:block;width:74px;height:42px;min-height:42px;border:1px solid #cbd9df;border-radius:9px;background:#fff;cursor:pointer;padding:3px}
+.layout-font-controls button{border:1px solid #cbd9df;background:#fff;color:#23566b;border-radius:9px;padding:10px 12px;font-weight:650}
+.layout-color-value{color:#718492;font-size:12px;align-self:center}
+.layout-style-hint{margin:0 0 15px}
+@media(max-width:750px){.layout-font-controls label:first-child,.layout-font-controls select{min-width:180px}}
