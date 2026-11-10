@@ -7,6 +7,7 @@ packages=(
   ca-certificates
   chromium
   curl
+  ffmpeg
   git
   labwc
   openssh-client
