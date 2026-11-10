@@ -126,9 +126,9 @@ def snapshot() -> dict:
             del TASKS[key]
         active = [_public(x, now) for x in TASKS.values()
                   if x["completed_at"] is None]
-        recent = sorted(
-            (_public(x, now) for x in TASKS.values()
-             if x["completed_at"] is not None),
-            key=lambda x: x["elapsed_s"], reverse=True,
+        latest = sorted(
+            (x for x in TASKS.values() if x["completed_at"] is not None),
+            key=lambda x: x["completed_at"], reverse=True,
         )[:MAX_RECENT]
+        recent = [_public(x, now) for x in latest]
         return {"active": active, "recent": recent}
