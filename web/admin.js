@@ -36,7 +36,8 @@ function renderOnlineSources(){
   const config=status.config.online_sources||{};
   for(const source of status.online_sources||[]){
     const msg=source.requires_key&&!source.ready?'Нужен API-ключ':(source.error||'Каталог готов');
-    const row=line(source.name,`${source.count} роликов · ${msg}`);
+    const preparation=source.id==='apple'?` · готово к показу: ${source.playable||0}`:'';
+    const row=line(source.name,`${source.count} роликов${preparation} · ${msg}`);
     const label=document.createElement('label');
     const check=document.createElement('input');check.type='checkbox';
     check.checked=!!config[source.id];check.title='Включить источник '+source.name;
