@@ -277,7 +277,7 @@ function osdFontStack(selection){
   if(Object.prototype.hasOwnProperty.call(osdFonts,selection))return osdFonts[selection];
   if(typeof selection==='string'&&selection.startsWith('installed:')){
     const family=selection.slice('installed:'.length);
-    if(family&&family.length<=160&&!/[\\x00-\\x1f\\x7f]/.test(family)){
+    if(family&&family.length<=160&&[...family].every(ch=>ch.charCodeAt(0)>31&&ch.charCodeAt(0)!==127)){
       // JSON quoting also escapes literal quote/backslash characters for CSS.
       return JSON.stringify(family)+',sans-serif';
     }
