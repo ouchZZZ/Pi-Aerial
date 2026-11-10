@@ -111,7 +111,7 @@ test('night shade covers all OSD layers and remains separate from one-shot hidin
   const zIndex = selector => Number(displayCSS.match(new RegExp(selector + '\\{[^}]*z-index:(\\d+)'))[1]);
   assert.ok(zIndex('#nightShade') > zIndex('\\.module-layer'));
   assert.ok(zIndex('#nightShade') > zIndex('\\.calendar-card'));
-  assert.match(displayCSS, /body\.playing-once :is\(#shade,#clockCard,#calendarCard,#moduleLayer,#clipFooter\)\{display:none\}/);
+  assert.match(displayCSS, /body\.playing-once :is\(#shade,#clockCard,#weatherCard,#calendarCard,#moduleLayer,#clipFooter\)\{display:none\}/);
 });
 
 test('one-shot skips the rotation timer and restores OSD and playlist on end or failure', async () => {
@@ -241,6 +241,36 @@ test('both OSD blocks alternate sides when a video starts playing', async () => 
     assert.equal(isRight('calendarCard'), !right);
     if (index < 2) h.video.dispatch('ended');
   }
+});
+
+test('custom OSD layout positions each block independently and disables rotation', async () => {
+  const h = await ready();
+  const layout = {
+    clock: {x: 12, y: 8, scale: 1.2},
+    weather: {x: 50, y: 75, scale: 0.8},
+    calendar: {x: 70, y: 7, scale: 1},
+    footer: {x: 9, y: 92, scale: 0.7},
+  };
+  h.publicState.settings.osd_layout = layout;
+  await h.context.poll();
+  assert.ok(h.bodyClasses.has('custom-osd-layout'));
+  assert.equal(h.elements.get('clockCard').style.left, '12%');
+  assert.equal(h.elements.get('weatherCard').style.top, '75%');
+  assert.equal(h.elements.get('weatherCard').style.transform, 'scale(0.8)');
+  assert.equal(h.elements.get('calendarCard').style.left, '70%');
+  h.publicState.videos = [{url:'/media/a.mp4'},{url:'/media/b.mp4'}];
+  await h.context.poll();
+  h.video.pending.at(-1).resolve();
+  await settle();
+  h.video.dispatch('ended');
+  h.video.pending.at(-1).resolve();
+  await settle();
+  assert.ok(!h.elements.get('clockCard').className.includes('osd-right'));
+  assert.ok(!h.elements.get('weatherCard').className.includes('osd-right'));
+  h.publicState.settings.osd_layout = {};
+  await h.context.poll();
+  assert.ok(!h.bodyClasses.has('custom-osd-layout'));
+  assert.equal(h.elements.get('weatherCard').style.left, '');
 });
 
 test('calendar shows leading dates, holidays and transferred days off', async () => {
