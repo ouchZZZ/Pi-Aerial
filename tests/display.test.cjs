@@ -19,7 +19,10 @@ function makeHarness(search = '') {
       let content = '';
       const listeners = new Map();
       const item = {
-        id, style: {}, hidden: false, className: '', writes: 0,
+        id, style: {
+          setProperty(name, value) { this[name] = value; },
+          removeProperty(name) { delete this[name]; },
+        }, hidden: false, className: '', writes: 0,
         classList: { add() {}, remove() {} },
         addEventListener(name, callback) { listeners.set(name, callback); },
         dispatch(name) { listeners.get(name)?.(); },
@@ -315,6 +318,54 @@ test('alternating custom OSD layouts cycle on every successful video start', asy
     assert.equal(h.elements.get('clockCard').style.left,expected.clock.x+'%');
     if(index<2)h.video.dispatch('ended');
   }
+});
+
+test('font and color follow each OSD layout without leaking between blocks', async () => {
+  const h=await ready();
+  const first={
+    clock:{x:8,y:10,scale:1,font:'georgia',color:'#ffcc00'},
+    weather:{x:5,y:37,scale:1,font:'courier',color:'#aabbcc'},
+    calendar:{x:72,y:10,scale:1},footer:{x:5,y:90,scale:1},
+  };
+  const second={
+    clock:{x:58,y:8,scale:.75,font:'arial',color:'#112233'},
+    weather:{x:52,y:45,scale:1},calendar:{x:5,y:14,scale:1},
+    footer:{x:35,y:93,scale:.8,font:'trebuchet',color:'#334455'},
+  };
+  h.publicState.settings.osd_layout_mode='alternate';
+  h.publicState.settings.osd_layout=first;
+  h.publicState.settings.osd_layout_alt=second;
+  h.publicState.videos=[{url:'/media/a'},{url:'/media/b'}];
+  await h.context.poll();
+  const clock=h.elements.get('clockCard').style;
+  const weather=h.elements.get('weatherCard').style;
+  const footer=h.elements.get('clipFooter').style;
+  assert.match(clock.fontFamily,/Georgia/);
+  assert.equal(clock.color,'#ffcc00');
+  assert.equal(clock['--osd-text-color'],'#ffcc00');
+  assert.match(weather.fontFamily,/Courier New/);
+  assert.equal(weather['--osd-text-color'],'#aabbcc');
+  assert.equal(footer.color,'');
+  h.video.pending[0].resolve();
+  await settle();
+  h.video.dispatch('ended');
+  h.video.pending[1].resolve();
+  await settle();
+  assert.match(clock.fontFamily,/Arial/);
+  assert.equal(clock.color,'#112233');
+  assert.equal(weather.fontFamily,'');
+  assert.equal(weather.color,'');
+  assert.equal(weather['--osd-text-color'],undefined);
+  assert.match(footer.fontFamily,/Trebuchet MS/);
+  assert.equal(footer.color,'#334455');
+  h.publicState.settings.osd_layout={};
+  h.publicState.settings.osd_layout_alt={};
+  await h.context.poll();
+  assert.equal(clock.fontFamily,'');
+  assert.equal(clock.color,'');
+  assert.equal(clock['--osd-text-color'],undefined);
+  assert.equal(footer.fontFamily,'');
+  assert.equal(footer.color,'');
 });
 
 test('single-position mode uses the default first position without rotating', async () => {
