@@ -26,6 +26,7 @@ DEFAULTS = {
     'night_mode': True, 'night_start': 23, 'night_end': 7,
     'night_opacity': 0.45, 'clock_shift': True,
     'enabled_modules': {},
+    'local_videos_enabled': True,
     'online_sources': {'apple': True, 'nasa': True, 'pixabay': False, 'pexels': False},
     'online_cache_enabled': True,
     'online_cache_gb': 12,
@@ -89,7 +90,8 @@ def update_settings(new: dict) -> dict:
         raise ValueError('Неверный режим кеширования')
     if type(result['online_cache_gb']) is not int or not 1 <= result['online_cache_gb'] <= 64:
         raise ValueError('Лимит кеша должен быть 1–64 ГБ')
-    for key in ('show_clock', 'show_date', 'show_weather', 'night_mode', 'clock_shift'):
+    for key in ('show_clock', 'show_date', 'show_weather', 'night_mode', 'clock_shift',
+                'local_videos_enabled'):
         if not isinstance(result[key], bool):
             raise ValueError(f'Параметр {key} должен быть логическим')
     if result['clock_position'] not in ('bottom-left', 'bottom-center', 'center', 'top-right'):

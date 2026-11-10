@@ -98,7 +98,8 @@ def public():
     enabled = cfg.get('enabled_modules', {})
     return {
         'version': CURRENT_VERSION, 'settings': cfg,
-        'weather': weather.current_weather(), 'videos': video_list() + online.list_clips(),
+        'weather': weather.current_weather(),
+        'videos': (video_list() if cfg['local_videos_enabled'] else []) + online.list_clips(),
         'modules': [m for m in modules if enabled.get(m['id'], True)],
         'reload_counter': read_json(DATA / 'reload.json').get('counter', 0),
     }

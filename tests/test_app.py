@@ -134,3 +134,41 @@ def test_safe_upload_and_core_queue(monkeypatch):
         assert (DATA / 'pending_update.json').exists()
         assert (TEST_BASE / 'releases' / '0.2.0' / 'app' / 'main.py').exists()
         (DATA / 'pending_update.json').unlink()
+
+
+def test_local_source_toggle_preserves_uploaded_files(monkeypatch):
+    """Manual uploads disappear from the playlist, but stay in admin and on disk."""
+    from app import online
+    from app.storage import update_settings
+    monkeypatch.setattr(weather, 'refresh_weather', lambda: {})
+    monkeypatch.setattr(online, 'list_clips', lambda: [])
+    name = 'hand_uploaded_test.mp4'
+    video = DATA / 'videos' / name
+    video.write_bytes(b'\\x00\\x00\\x00\\x18ftypisom' + b'0' * 100)
+    try:
+        update_settings({'local_videos_enabled': True})
+        with TestClient(main.app) as client:
+            csrf = login_client(client)
+            assert any(item['name'] == name
+                       for item in client.get('/api/public').json()['videos'])
+            response = client.put('/api/admin/config',
+                                  json={'changes': {'local_videos_enabled': False}},
+                                  headers=csrf)
+            assert response.status_code == 200, response.text
+            assert not any(item['name'] == name
+                           for item in client.get('/api/public').json()['videos'])
+            assert any(item['name'] == name
+                       for item in client.get('/api/admin/status').json()['videos'])
+            assert video.exists()
+            response = client.put('/api/admin/config',
+                                  json={'changes': {'local_videos_enabled': True}},
+                                  headers=csrf)
+            assert response.status_code == 200, response.text
+            assert any(item['name'] == name
+                       for item in client.get('/api/public').json()['videos'])
+            assert client.put('/api/admin/config',
+                              json={'changes': {'local_videos_enabled': 'off'}},
+                              headers=csrf).status_code == 422
+    finally:
+        update_settings({'local_videos_enabled': True})
+        video.unlink(missing_ok=True)
