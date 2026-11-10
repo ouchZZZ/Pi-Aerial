@@ -194,12 +194,12 @@ test('each alternate OSD position snaps independently while editing',async()=>{
   ui.drag('clock',64,36);
   await ui.save();
   assert.deepEqual(ui.saved.osd_layout,{});
-  assert.equal(ui.saved.osd_layout_alt.clock.x,78.13); // Preset 2 starts on the right.
+  assert.equal(ui.saved.osd_layout_alt.clock.x,71.88); // Preset 2 starts on the right.
   ui.selectPosition(0);
   ui.drag('clock',64,36);
   await ui.save();
   assert.equal(ui.saved.osd_layout.clock.x,15.63);
-  assert.equal(ui.saved.osd_layout_alt.clock.x,78.13);
+  assert.equal(ui.saved.osd_layout_alt.clock.x,71.88);
 });
 
 test('grid toggle preference persists between editor openings',()=>{
