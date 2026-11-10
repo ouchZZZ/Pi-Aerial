@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, bundles, weather, github_updates, online, local_videos
+from . import auth, bundles, weather, github_updates, online, local_videos, video_progress
 from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, atomic_json, init_data,
                       read_json, safe_id, settings, update_settings)
 
@@ -264,6 +264,12 @@ def admin_status(_: None = Depends(auth.require_admin)):
             'online_sources': online.source_status(),
             'cache': {'enabled': cfg['online_cache_enabled'],
                       'limit_gb': cfg['online_cache_gb']}}
+
+
+@app.get('/api/admin/videos/progress')
+def admin_video_progress(_: None = Depends(auth.require_admin)):
+    """Private, short-lived telemetry. No remote URLs or file paths."""
+    return video_progress.snapshot()
 
 
 @app.put('/api/admin/config')
