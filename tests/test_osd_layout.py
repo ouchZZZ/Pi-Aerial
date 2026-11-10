@@ -104,3 +104,16 @@ def test_invalid_font_or_color_is_rejected(monkeypatch, tmp_path, key, bad_value
     with pytest.raises(ValueError):
         storage.update_settings({'osd_layout': layout})
     assert storage.settings()['osd_layout'] == {}
+
+
+def test_uninstalled_font_name_does_not_break_saved_layout(monkeypatch, tmp_path):
+    """An uninstalled family must not block unrelated settings updates."""
+    monkeypatch.setattr(storage, 'DATA', tmp_path)
+    names = ('clock', 'weather', 'calendar', 'footer')
+    layout = {name: {'x': 12, 'y': 14, 'scale': 1} for name in names}
+    layout['clock']['font'] = 'installed:DejaVu Sans'
+    storage.update_settings({'osd_layout': layout})
+    assert storage.settings()['osd_layout']['clock']['font'] == 'installed:DejaVu Sans'
+    # No fontconfig lookup during persistence: removed fonts use browser fallback.
+    storage.update_settings({'city': 'Саяногорск'})
+    assert storage.settings()['osd_layout']['clock']['font'] == 'installed:DejaVu Sans'
