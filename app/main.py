@@ -68,7 +68,10 @@ app.mount('/assets', StaticFiles(directory=WEB), name='assets')
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['Referrer-Policy'] = 'no-referrer'
+    # The interactive OSM map requires an Origin/Referer on tile requests.
+    # Send only the site's origin (never the admin path or credentials).
+    response.headers['Referrer-Policy'] = ('strict-origin-when-cross-origin'
+                                            if request.url.path == '/admin' else 'no-referrer')
     response.headers.setdefault('Cache-Control', 'no-store' if request.url.path.startswith(('/api/', '/assets/', '/admin')) else 'public, max-age=300')
     if request.url.path.startswith('/admin'):
         response.headers['X-Frame-Options'] = 'DENY'
