@@ -3,6 +3,30 @@
 set -euo pipefail
 if [[ "${EUID}" -eq 0 ]]; then echo 'Запускайте от обычного пользователя, не root.'; exit 1; fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# Bootstrap/update only our fixed Raspberry Pi OS package whitelist.
+# The helper is copied into a root-owned path for restricted web-initiated updates.
+if [[ "${PI_AERIAL_SKIP_SYSTEM_DEPS:-0}" != "1" ]]; then
+  command -v sudo >/dev/null || { echo 'Установите sudo (на Raspberry Pi OS Desktop он уже есть).'; exit 1; }
+  echo '[deps] Проверяю системные пакеты Raspberry Pi OS...'
+  sudo bash "$HERE/tools/system_deps.sh" --refresh
+
+  HELPER=/usr/local/libexec/pi-aerial/system_deps
+  sudo install -D -o root -g root -m 0755 "$HERE/tools/system_deps.sh" "$HELPER"
+  SUDOERS_TMP="$(mktemp)"
+  trap 'rm -f "$SUDOERS_TMP"' EXIT
+  # Grant *only* the static helper with --ensure; never apt, shell, or the repo.
+  printf '%s ALL=(root) NOPASSWD: %s --ensure\n' "$(id -un)" "$HELPER" > "$SUDOERS_TMP"
+  chmod 0600 "$SUDOERS_TMP"
+  sudo visudo -cf "$SUDOERS_TMP" >/dev/null
+  sudo install -o root -g root -m 0440 "$SUDOERS_TMP" /etc/sudoers.d/pi-aerial-system-deps
+  rm -f "$SUDOERS_TMP"
+  trap - EXIT
+  echo '[deps] Привилегированный помощник зарегистрирован; веб-панель может доставлять недостающие пакеты.'
+else
+  echo '[deps] Проверка системных пакетов пропущена (PI_AERIAL_SKIP_SYSTEM_DEPS=1).'
+fi
+
 BASE="${PI_AERIAL_INSTALL_DIR:-$HOME/pi-aerial}"
 VERSION="$(cat "$HERE/VERSION")"
 GIT_REVISION=""
@@ -12,10 +36,9 @@ fi
 RELEASE_ID="$VERSION"
 if [[ -n "$GIT_REVISION" ]]; then RELEASE_ID="$VERSION-g${GIT_REVISION:0:12}"; fi
 echo "Pi Aerial $VERSION → $BASE"
-command -v python3 >/dev/null || { echo 'Нужен python3'; exit 1; }
+command -v python3 >/dev/null || { echo 'python3 не найден после проверки зависимостей'; exit 1; }
 if ! command -v chromium >/dev/null && ! command -v chromium-browser >/dev/null; then
-  echo 'Chromium не найден. Установите: sudo apt update && sudo apt install chromium'
-  exit 1
+  echo 'Chromium не найден после проверки зависимостей'; exit 1
 fi
 mkdir -p "$BASE/releases" "$BASE/data/videos" "$BASE/data/modules" "$BASE/data/trusted_keys" "$BASE/data/incoming" "$BASE/data/weather_cache"
 DEST="$BASE/releases/$RELEASE_ID"
