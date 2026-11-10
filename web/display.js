@@ -279,7 +279,7 @@ async function poll(){
     if(shouldReload){location.reload();return;}
     const shouldChange=listChanged(next.videos);
     state=next;
-    document.documentElement.lang=displayLanguage();
+    if(document.documentElement)document.documentElement.lang=displayLanguage();
     videos=next.videos;
     renderOsdPosition();
     drawTime();
