@@ -9,7 +9,7 @@ const root = path.join(__dirname, '..');
 const displayJS = fs.readFileSync(path.join(root, 'web/display.js'), 'utf8');
 const displayCSS = fs.readFileSync(path.join(root, 'web/display.css'), 'utf8');
 
-function makeHarness() {
+function makeHarness(search = '') {
   const elements = new Map();
   const timers = [];
   const intervals = [];
@@ -86,7 +86,7 @@ function makeHarness() {
       videos: [...publicState.videos], modules: [...publicState.modules],
     })}),
     console: {error: (...items) => errors.push(items), warn() {}},
-    location: {reload() {}},
+    location: {reload() {}, search},
   };
   vm.createContext(context);
   vm.runInContext(displayJS, context, {filename: 'display.js'});
@@ -105,6 +105,17 @@ test('idle background has no perpetually running CSS animation', () => {
   assert.doesNotMatch(displayCSS, /animation:\s*float\b/);
   assert.doesNotMatch(displayCSS, /@keyframes\s+float\b/);
   assert.match(displayCSS, /#video\.ready/); // Video fade-in remains available
+});
+
+test('layout preview updates OSD but never loads video or starts player polling', async () => {
+  const h = makeHarness('?layout_preview=1');
+  await settle();
+  assert.ok(h.bodyClasses.has('layout-preview'));
+  assert.ok(h.intervals.some(timer => timer.ms === 10000));
+  assert.ok(!h.intervals.some(timer => timer.ms === 30000 || timer.ms === 3000));
+  h.publicState.videos = [{url: '/media/expensive-video.mp4'}];
+  await h.context.poll();
+  assert.equal(h.video.loadCalls, 0);
 });
 
 test('night shade covers all OSD layers and remains separate from one-shot hiding', () => {
