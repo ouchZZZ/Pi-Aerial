@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .storage import DATA, atomic_json, read_json
 from .video_conversion import normalize_video
+from . import video_progress
 
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".m4v", ".mov", ".mkv"}
 PROFILE = "h264-1080p30-8bit-v1"
@@ -194,6 +195,7 @@ def process_one() -> bool:
     source = _source(job)
     output = _output(job)
     work = WORK / (ident + ".mp4")
+    video_progress.start("local", ident, job["name"])
     try:
         WORK.mkdir(parents=True, exist_ok=True)
         if is_ready(output):
@@ -206,7 +208,10 @@ def process_one() -> bool:
                 raise ValueError("Недостаточно места для конвертации: требуется резерв 5 ГБ")
             work.unlink(missing_ok=True)
             print(f"[local-video] preparing {ident}: {job['name']}", flush=True)
-            mode = normalize_video(source, work, max_bytes=LOCAL_MAX_BYTES)
+            mode = normalize_video(
+                source, work, max_bytes=LOCAL_MAX_BYTES,
+                on_progress=lambda **fields: video_progress.conversion(
+                    "local", ident, **fields))
             if shutil.disk_usage(DATA).free < RESERVE_BYTES:
                 raise ValueError("Недостаточно места: нельзя нарушать резерв 5 ГБ")
             if not source.is_file():
@@ -221,6 +226,7 @@ def process_one() -> bool:
             jobs = _jobs()
             jobs.pop(ident, None)
             _save(jobs)
+        video_progress.finish("local", ident, True)
     except Exception as exc:
         error = str(exc).strip()[:240] or exc.__class__.__name__
         with LOCK:
@@ -229,6 +235,7 @@ def process_one() -> bool:
                 jobs[ident]["state"] = "failed"
                 jobs[ident]["error"] = error
                 _save(jobs)
+        video_progress.finish("local", ident, False, "Ошибка преобразования")
         print(f"[local-video] failed {ident}: {error}", flush=True)
     finally:
         work.unlink(missing_ok=True)
