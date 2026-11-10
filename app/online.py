@@ -22,6 +22,7 @@ from pathlib import Path
 import certifi
 
 from .storage import DATA, atomic_json, read_json, settings
+from .video_conversion import normalize_video
 
 SOURCE_NAMES = {
     "apple": "Apple Aerial",
@@ -183,11 +184,12 @@ def source_status() -> list[dict]:
             "count": len(state.get("items", [])),
             "playable": sum(
                 1 for entry in state.get("items", [])
-                if not requires_remux(entry) or cached_file(entry.get("id", "")) is not None
-            ),
+                if cached_file(entry.get("id", "")) is not None
+            ) if provider in ("apple", "nasa") else len(state.get("items", [])),
             "error": (("Установите ffmpeg: sudo apt install -y ffmpeg"
                        if shutil.which("ffmpeg") is None else None)
-                      if provider == "apple" and cfg["online_sources"].get("apple")
+                      if provider in ("apple", "nasa")
+                      and cfg["online_sources"].get(provider)
                       and not state.get("error") else state.get("error")),
             "last_updated": state.get("updated"),
         })
@@ -414,8 +416,9 @@ def list_clips() -> list[dict]:
             if not isinstance(item_id, str) or len(item_id) != 24:
                 continue
             cached = cached_file(item_id) is not None
-            # Don't advertise unconverted QuickTime bytes as HTML5 MP4.
-            if requires_remux(item) and not cached:
+            # Apple and NASA publish a mix of QuickTime, HEVC and H.264.
+            # Only list files already normalized to our compatible MP4 profile.
+            if provider in ("apple", "nasa") and not cached:
                 continue
             result.append({"id": item_id, "name": item["name"],
                            "url": "/media/online/" + item_id,
@@ -510,28 +513,16 @@ def _cache_worker(entry: dict) -> None:
                 header = f.read(12)
             if header[4:8] != b"ftyp":
                 raise ValueError("Ответ сервера не содержит MP4/MOV")
-            is_mov = urllib.parse.urlsplit(entry["remote_url"]).path.lower().endswith(".mov")
-            if is_mov:
-                ffmpeg = shutil.which("ffmpeg")
-                if not ffmpeg:
-                    raise ValueError("Для кеширования MOV нужен ffmpeg; онлайн-поток доступен")
-                if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:
-                    raise ValueError("Не хватает места на безопасный ремультиплекс MOV")
-                # Copy the H.264 track into a fast-start MP4 container. No
-                # re-encoding or extra CPU-heavy transcoding on Raspberry Pi.
-                subprocess.run(
-                    [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                     "-i", str(temp), "-map", "0:v:0", "-an", "-c:v", "copy",
-                     "-movflags", "+faststart", str(muxed)],
-                    check=True, timeout=300, capture_output=True,
-                )
-                with muxed.open("rb") as remuxed:
-                    if remuxed.read(12)[4:8] != b"ftyp":
-                        raise ValueError("Ошибка при преобразовании MOV в MP4")
-                os.replace(muxed, final)
-            else:
-                os.replace(temp, final)
-            print(f"[online] cached {provider}: {ident} ({total // 1024 // 1024} MB)", flush=True)
+            if shutil.which("ffmpeg") is None:
+                raise ValueError("Нужен ffmpeg для подготовки видео")
+            if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:
+                raise ValueError("Недостаточно места для преобразования видео")
+            print(f"[online] preparing {provider}: {ident} "
+                  f"({total // 1024 // 1024} МБ исходник)", flush=True)
+            mode = normalize_video(temp, muxed)
+            os.replace(muxed, final)
+            print(f"[online] ready {provider}: {ident} "
+                  f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
             _prune(max_bytes, ident)
         finally:
             temp.unlink(missing_ok=True)
@@ -571,13 +562,12 @@ def warm_cache() -> None:
         if not cfg.get("online_sources", {}).get(provider, False):
             continue
         items = catalog.get(provider, {}).get("items", [])
-        movs = [entry for entry in items if isinstance(entry, dict)
-                and requires_remux(entry)
-                and allowed_video_url(entry.get("remote_url"), provider)]
-        ready = sum(1 for entry in movs if cached_file(entry.get("id", "")))
+        candidates = [entry for entry in items if isinstance(entry, dict)
+                      and allowed_video_url(entry.get("remote_url"), provider)]
+        ready = sum(1 for entry in candidates if cached_file(entry.get("id", "")))
         if ready >= target:
             continue
-        for entry in movs:
+        for entry in candidates:
             ident = entry.get("id", "")
             if not isinstance(ident, str) or len(ident) != 24:
                 continue
