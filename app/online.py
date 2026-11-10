@@ -100,7 +100,7 @@ def open_video_stream(entry: dict, byte_range: str | None = None):
     headers = {"User-Agent": "PiAerial/0.3", "Accept": "*/*"}
     if byte_range is not None:
         import re
-        if not re.fullmatch(r"bytes=(?:\\d+-\\d*|-\\d+)", byte_range) or len(byte_range) > 80:
+        if not re.fullmatch(r"bytes=(?:\d+-\d*|-\d+)", byte_range) or len(byte_range) > 80:
             raise ValueError("Invalid Range")
         headers["Range"] = byte_range
     opener = urllib.request.build_opener(
