@@ -23,6 +23,7 @@ import certifi
 
 from .storage import DATA, atomic_json, read_json, settings
 from .video_conversion import normalize_video
+from . import video_progress
 
 SOURCE_NAMES = {
     "apple": "Apple Aerial",
@@ -493,6 +494,7 @@ def _cache_worker(entry: dict) -> None:
         temp.unlink(missing_ok=True)
         muxed.unlink(missing_ok=True)
         provider = entry["provider"]
+        video_progress.start("online", ident, entry.get("name") or ident, provider)
         opener = urllib.request.build_opener(SafeRedirect(provider),
                                               urllib.request.HTTPSHandler(context=_tls_context()))
         req = urllib.request.Request(entry["remote_url"],
@@ -503,6 +505,7 @@ def _cache_worker(entry: dict) -> None:
                 length = int(response.headers.get("Content-Length") or 0)
                 if length > MAX_DOWNLOAD:
                     raise ValueError("Слишком большой ролик для кеша")
+                video_progress.download("online", ident, 0, length or None)
                 while True:
                     buf = response.read(1024 * 256)
                     if not buf:
@@ -511,6 +514,7 @@ def _cache_worker(entry: dict) -> None:
                     if total > MAX_DOWNLOAD or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
                         raise ValueError("Достигнут лимит видео или свободного места")
                     file.write(buf)
+                    video_progress.download("online", ident, total, length or None)
             if total < 1024:
                 raise ValueError("Пустой видеоролик")
             with temp.open("rb") as f:
@@ -523,18 +527,23 @@ def _cache_worker(entry: dict) -> None:
                 raise ValueError("Недостаточно места для преобразования видео")
             print(f"[online] preparing {provider}: {ident} "
                   f"({total // 1024 // 1024} МБ исходник)", flush=True)
-            mode = normalize_video(temp, muxed)
+            mode = normalize_video(
+                temp, muxed,
+                on_progress=lambda **fields: video_progress.conversion(
+                    "online", ident, **fields))
             os.replace(muxed, final)
             (CACHE_FOLDER / (ident + ".ready")).write_text(CACHE_PROFILE, encoding="utf8")
             print(f"[online] ready {provider}: {ident} "
                   f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
             _prune(max_bytes, ident)
+            video_progress.finish("online", ident, True)
         finally:
             temp.unlink(missing_ok=True)
             muxed.unlink(missing_ok=True)
     except Exception as exc:
         with LOCK:
             CACHE_FAILED_UNTIL[ident] = time.time() + 3600
+        video_progress.finish("online", ident, False, "Ошибка загрузки или обработки")
         print(f"[online] cannot cache {ident}: {exc}", flush=True)
     finally:
         with LOCK:
