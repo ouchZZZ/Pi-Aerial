@@ -44,6 +44,8 @@ RESERVE_BYTES = 5 * 1024 ** 3
 LOCK = threading.RLock()
 DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 ACTIVE: set[str] = set()
+CACHE_FAILED_UNTIL: dict[str, float] = {}
+APPLE_WARM_TARGET = 4
 
 
 def allowed_video_url(url: str, provider: str) -> bool:
@@ -66,6 +68,28 @@ def allowed_video_url(url: str, provider: str) -> bool:
         return any(host == d or host.endswith("." + d) for d in suffix)
     except (ValueError, AttributeError):
         return False
+
+
+def nasa_https_url(url: str) -> str | None:
+    """NASA manifests sometimes publish http links to assets with valid HTTPS.
+
+    Upgrade only NASA-owned hosts; never allow arbitrary HTTP media.
+    """
+    if not isinstance(url, str) or len(url) > 2048:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme == "http" and parsed.username is None
+                and parsed.password is None and parsed.port in (None, 80)):
+            if parsed.hostname and (
+                parsed.hostname.lower() == "nasa.gov"
+                or parsed.hostname.lower().endswith(".nasa.gov")
+            ):
+                parsed = parsed._replace(scheme="https", netloc=parsed.hostname.lower())
+                url = urllib.parse.urlunsplit(parsed)
+        return url if allowed_video_url(url, "nasa") else None
+    except ValueError:
+        return None
 
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -147,7 +171,14 @@ def source_status() -> list[dict]:
             "ready": (not requires_key or bool(_key(provider))),
             "requires_key": requires_key,
             "count": len(state.get("items", [])),
-            "error": state.get("error"),
+            "playable": sum(
+                1 for entry in state.get("items", [])
+                if cached_file(entry.get("id", "")) is not None
+            ) if provider == "apple" else len(state.get("items", [])),
+            "error": (("Установите ffmpeg: sudo apt install -y ffmpeg"
+                       if shutil.which("ffmpeg") is None else None)
+                      if provider == "apple" and cfg["online_sources"].get("apple")
+                      and not state.get("error") else state.get("error")),
             "last_updated": state.get("updated"),
         })
     return out
@@ -208,9 +239,11 @@ def _nasa_manifest(entry: dict) -> tuple[dict | None, str]:
     files = [r.get("href") for r in manifest.get("collection", {}).get("items", [])
              if isinstance(r, dict) and isinstance(r.get("href"), str)]
     movies = [
-        url for url in files
-        if urllib.parse.urlsplit(url).path.lower().endswith((".mp4", ".m4v", ".mov"))
-        and allowed_video_url(url, "nasa")
+        secure for url in files
+        if isinstance(url, str)
+        for secure in [nasa_https_url(url)]
+        if secure is not None
+        and urllib.parse.urlsplit(secure).path.lower().endswith((".mp4", ".m4v", ".mov"))
     ]
     # Prefer browser-friendly MP4, then medium/small renditions to avoid 4K.
     movies.sort(key=lambda url: (
@@ -346,6 +379,11 @@ def refresh_catalog(force=False) -> None:
             print(f"[online] {name}: {exc}", flush=True)
         sources[name] = state
         changed = True
+        # Do not wait for slower NASA discovery before starting the first MOV.
+        if name == "apple":
+            with LOCK:
+                atomic_json(CATALOG_FILE, {"sources": sources})
+            warm_cache()
     if changed:
         with LOCK:
             atomic_json(CATALOG_FILE, {"sources": sources})
@@ -365,7 +403,11 @@ def list_clips() -> list[dict]:
             item_id = item.get("id", "")
             if not isinstance(item_id, str) or len(item_id) != 24:
                 continue
-            cached = (CACHE_FOLDER / (item_id + ".mp4")).is_file()
+            cached = cached_file(item_id) is not None
+            # QuickTime is not HTML5 MP4: only advertise a remuxed and fully
+            # cached file to Chromium. Original MOV bytes are never served as MP4.
+            if provider == "apple" and not cached:
+                continue
             result.append({"id": item_id, "name": item["name"],
                            "url": "/media/online/" + item_id,
                            "provider": provider, "credit": item.get("credit", ""),
@@ -486,6 +528,8 @@ def _cache_worker(entry: dict) -> None:
             temp.unlink(missing_ok=True)
             muxed.unlink(missing_ok=True)
     except Exception as exc:
+        with LOCK:
+            CACHE_FAILED_UNTIL[ident] = time.time() + 3600
         print(f"[online] cannot cache {ident}: {exc}", flush=True)
     finally:
         with LOCK:
@@ -498,12 +542,43 @@ def try_cache(entry: dict) -> None:
         return
     ident = entry["id"]
     with LOCK:
-        if ident in ACTIVE or (CACHE_FOLDER / (ident + ".mp4")).is_file():
+        if (ident in ACTIVE or cached_file(ident) is not None
+                or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
             return
         if not DOWNLOAD_SLOT.acquire(blocking=False):
             return
         ACTIVE.add(ident)
     threading.Thread(target=_cache_worker, args=(dict(entry),), daemon=True).start()
+
+
+def warm_cache() -> None:
+    """Maintain a small ready-to-play Apple library, not a bulk mirror.
+
+    One download at a time, with a bounded cache and a retry cooldown.
+    The display only sees verified completed MP4 files.
+    """
+    cfg = settings()
+    if not (cfg.get("online_cache_enabled", True)
+            and cfg.get("online_sources", {}).get("apple", False)):
+        return
+    if shutil.which("ffmpeg") is None:
+        return
+    with LOCK:
+        catalog = read_json(CATALOG_FILE).get("sources", {})
+    items = catalog.get("apple", {}).get("items", [])
+    ready = sum(1 for entry in items if cached_file(entry.get("id", "")))
+    if ready >= APPLE_WARM_TARGET:
+        return
+    for entry in items:
+        if not isinstance(entry, dict) or not allowed_video_url(entry.get("remote_url"), "apple"):
+            continue
+        ident = entry.get("id", "")
+        if not isinstance(ident, str) or len(ident) != 24:
+            continue
+        if cached_file(ident) or CACHE_FAILED_UNTIL.get(ident, 0) > time.time():
+            continue
+        try_cache(entry)
+        return
 
 
 def clear_cache() -> int:
