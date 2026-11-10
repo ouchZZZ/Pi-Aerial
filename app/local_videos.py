@@ -13,11 +13,12 @@ import time
 from pathlib import Path
 
 from .storage import DATA, atomic_json, read_json
-from .video_conversion import MAX_BYTES, normalize_video
+from .video_conversion import normalize_video
 
-VIDEO_EXTENSIONS = {".mp4", ".webm", ".m4v"}
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".m4v", ".mov", ".mkv"}
 PROFILE = "h264-1080p30-8bit-v1"
 RESERVE_BYTES = 5 * 1024**3
+LOCAL_MAX_BYTES = 4 * 1024**3
 INBOX = DATA / "local_video_inbox"
 WORK = DATA / "local_video_work"
 READY = DATA / "videos"
@@ -201,11 +202,13 @@ def process_one() -> bool:
         else:
             if not source.is_file() or source.is_symlink():
                 raise ValueError("Исходный файл больше не существует")
-            if shutil.disk_usage(DATA).free < RESERVE_BYTES + MAX_BYTES:
+            if shutil.disk_usage(DATA).free < RESERVE_BYTES + LOCAL_MAX_BYTES:
                 raise ValueError("Недостаточно места для конвертации: требуется резерв 5 ГБ")
             work.unlink(missing_ok=True)
             print(f"[local-video] preparing {ident}: {job['name']}", flush=True)
-            mode = normalize_video(source, work)
+            mode = normalize_video(source, work, max_bytes=LOCAL_MAX_BYTES)
+            if shutil.disk_usage(DATA).free < RESERVE_BYTES:
+                raise ValueError("Недостаточно места: нельзя нарушать резерв 5 ГБ")
             if not source.is_file():
                 raise ValueError("Исходный файл удалён до окончания обработки")
             remove_ready(output)
