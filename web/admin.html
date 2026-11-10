@@ -28,6 +28,10 @@
     </select></label>
     <label for="layoutScale">Размер <output id="layoutScaleValue">100%</output><input id="layoutScale" type="range" min="40" max="250" step="5" value="100"></label>
   </div>
+  <div class="layout-grid-controls">
+    <label class="layout-grid-toggle"><input id="layoutSnapGrid" type="checkbox" checked> Сетка и привязка к ней</label>
+    <span class="hint">Шаг сетки: 40 px на макете 1280 × 720. Отключите для свободного перемещения.</span>
+  </div>
   <div class="layout-stage" id="layoutStage">
     <iframe id="layoutFrame" title="Предпросмотр OSD без воспроизведения видео" scrolling="no"></iframe>
     <div class="layout-overlay" id="layoutOverlay" aria-label="Перетаскиваемые блоки"></div>
