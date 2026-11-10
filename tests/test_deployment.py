@@ -53,3 +53,14 @@ def test_web_updater_can_only_request_whitelisted_system_repair(tmp_path):
         with patch.object(module.subprocess, "run") as run:
             module.ensure_system_dependencies()
         run.assert_not_called()
+
+
+def test_public_installer_keeps_legacy_ssh_support():
+    from pathlib import Path
+    root = Path(__file__).parents[1]
+    installer = (root / 'install.sh').read_text()
+    github = (root / 'app/github_updates.py').read_text()
+    assert 'https://github.com/ouchZZZ/Pi-Aerial.git' in installer
+    assert 'git@github.com:ouchZZZ/Pi-Aerial.git' in installer
+    assert 'test -f "$HOME/.ssh/pi_aerial_github" ||' not in installer
+    assert 'PUBLIC_REMOTE' in github and 'LEGACY_SSH_REMOTE' in github
