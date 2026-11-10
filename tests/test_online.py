@@ -18,6 +18,10 @@ def test_only_trusted_https_media_hosts():
     assert not online.allowed_video_url("https://x:pw@sylvan.apple.com/a.mp4", "apple")
     assert not online.allowed_video_url("https://sylvan.apple.com:8080/a.mp4", "apple")
     assert not online.allowed_video_url("https://images-assets.nasa.gov/a.mp4", "apple")
+    assert online.nasa_https_url("http://images-assets.nasa.gov/video/earth~orig.mp4") == "https://images-assets.nasa.gov/video/earth~orig.mp4"
+    assert online.nasa_https_url("http://169.254.169.254/latest/meta-data") is None
+    assert online.nasa_https_url("http://nasa.gov.evil.test/clip.mp4") is None
+    assert online.nasa_https_url("https://images-assets.nasa.gov/video/earth.mov") == "https://images-assets.nasa.gov/video/earth.mov"
 
 
 def test_apple_catalog_selects_h264(monkeypatch):
@@ -284,3 +288,81 @@ def test_apple_mov_cache_remux_uses_stream_copy(monkeypatch, tmp_path):
     assert path.is_file()
     assert path.read_bytes()[8:12] == b"isom"
     assert recorded and "-c:v" in recorded[0] and "copy" in recorded[0]
+
+
+def test_nasa_http_manifest_links_are_upgraded(monkeypatch):
+    def fake(url, **kw):
+        if "/search?" in url:
+            return {"collection": {"items": [{"data": [{"nasa_id": "earth",
+                                                          "title": "Earth"}]}]}}
+        return {"collection": {"items": [{
+            "href": "http://images-assets.nasa.gov/video/earth/earth~orig.mp4"}]}}
+    monkeypatch.setattr(online, "_http_json", fake)
+    clips = online._nasa()
+    assert clips and clips[0]["remote_url"] == (
+        "https://images-assets.nasa.gov/video/earth/earth~orig.mp4"
+    )
+
+
+def test_mov_not_advertised_until_real_mp4_cache_ready(monkeypatch, tmp_path):
+    clip = online._clip(
+        "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
+        "Ocean", "Apple", "https://www.apple.com/"
+    )
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path / "cache")
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"apple": True, "nasa": False},
+        "online_cache_enabled": True,
+    })
+    online.CACHE_FOLDER.mkdir(parents=True)
+    online.atomic_json(online.CATALOG_FILE,
+                       {"sources": {"apple": {"items": [clip], "updated": 1}}})
+    assert online.list_clips() == []
+    from pathlib import Path
+    (online.CACHE_FOLDER / (clip["id"] + ".mp4")).write_bytes(
+        b"\\x00\\x00\\x00\\x18ftypisom" + b"0" * 1500
+    )
+    clips = online.list_clips()
+    assert len(clips) == 1 and clips[0]["cached"] is True
+    assert online.source_status()[0]["playable"] == 1
+
+
+def test_only_bounded_mov_prefetch_one_at_a_time(monkeypatch, tmp_path):
+    clips = [online._clip(
+        "apple", str(n), f"https://sylvan.apple.com/Videos/{n}.mov",
+        "Ocean", "Apple", "https://www.apple.com/"
+    ) for n in range(7)]
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path / "cache")
+    online.atomic_json(online.CATALOG_FILE,
+                       {"sources": {"apple": {"items": clips, "updated": 1}}})
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"apple": True, "nasa": False},
+        "online_cache_enabled": True,
+    })
+    monkeypatch.setattr(online.shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    calls = []
+    monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]))
+    online.warm_cache()
+    assert calls == [clips[0]["id"]]
+
+
+def test_uncached_mov_is_never_streamed_as_mp4(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main
+    entry = online._clip(
+        "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
+        "Ocean", "Apple", "https://www.apple.com/"
+    )
+    monkeypatch.setattr(online, "lookup", lambda clip_id: entry)
+    monkeypatch.setattr(online, "cached_file", lambda clip_id: None)
+    fetched = []
+    monkeypatch.setattr(online, "open_video_stream",
+                        lambda *args: fetched.append(True))
+    monkeypatch.setattr(online, "try_cache",
+                        lambda entry: None)
+    with TestClient(main.app) as client:
+        response = client.get("/media/online/" + entry["id"])
+        assert response.status_code == 503
+        assert not fetched
