@@ -2,11 +2,13 @@
 /* Visual OSD editor. The iframe runs the actual display markup without video decoding. */
 const PiLayoutEditor=(()=>{
   const FRAME_WIDTH=1280,FRAME_HEIGHT=720;
+  const GRID_COLUMNS=32,GRID_ROWS=18; // 40px square cells in the reference preview.
   const ids={clock:'clockCard',weather:'weatherCard',calendar:'calendarCard',footer:'clipFooter'};
   const captions={clock:'Часы',weather:'Погода',calendar:'Календарь',footer:'Описание'};
   const fallbacks={clock:[6,10],weather:[6,36],calendar:[74,10],footer:[5,92]};
   const items={};
   let started=false,ready=false,drafts=[{},{}],mode='alternate',position=0,selected='clock',drag=null,services=null;
+  let gridEnabled=true;
   const active=()=>drafts[position];
   const node=id=>document.getElementById(id);
   const round=n=>Math.round(n*100)/100;
@@ -35,6 +37,28 @@ const PiLayoutEditor=(()=>{
     if(!Object.keys(active()).length)drafts[position]=geometry();
   }
   function setMessage(message){node('layoutMessage').textContent=translate(message);}
+  // The grid is an editor preference, not a property of the video display.
+  function restoreGridPreference(){
+    try{gridEnabled=localStorage.getItem('pi-aerial-layout-grid')!=='off';}
+    catch{gridEnabled=true;}
+    updateGrid();
+  }
+  function updateGrid(){
+    stage().classList.toggle('show-grid',gridEnabled);
+    node('layoutSnapGrid').checked=gridEnabled;
+  }
+  function setGrid(enabled){
+    gridEnabled=Boolean(enabled);
+    updateGrid();
+    try{localStorage.setItem('pi-aerial-layout-grid',gridEnabled?'on':'off');}
+    catch{/* Private browsing or storage disabled: grid still works for this session. */}
+  }
+  function snapCoordinate(value,divisions,maximum){
+    const step=100/divisions;
+    const nearest=Math.round(clamp(value,0,maximum)/step);
+    const last=Math.floor((maximum+1e-8)/step);
+    return round(Math.min(nearest,last)*step);
+  }
   function setSelected(name){
     if(!ids[name])return;
     selected=name;
@@ -74,8 +98,10 @@ const PiLayoutEditor=(()=>{
   }
   function fitPosition(name){
     const current=active()[name],bounds=screen().getElementById(ids[name]).getBoundingClientRect();
-    current.x=round(clamp(current.x,0,Math.max(0,100-bounds.width/FRAME_WIDTH*100)));
-    current.y=round(clamp(current.y,0,Math.max(0,100-bounds.height/FRAME_HEIGHT*100)));
+    const maxX=Math.max(0,100-bounds.width/FRAME_WIDTH*100);
+    const maxY=Math.max(0,100-bounds.height/FRAME_HEIGHT*100);
+    current.x=gridEnabled?snapCoordinate(current.x,GRID_COLUMNS,maxX):round(clamp(current.x,0,maxX));
+    current.y=gridEnabled?snapCoordinate(current.y,GRID_ROWS,maxY):round(clamp(current.y,0,maxY));
   }
   function changed(){setMessage('Есть несохранённые изменения');}
   function startDrag(event,name,item){
@@ -136,11 +162,15 @@ const PiLayoutEditor=(()=>{
       item.addEventListener('keydown',event=>{
         if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;
         event.preventDefault();ensureGeometry();setSelected(name);
-        const delta=event.shiftKey?1:0.25;
-        if(event.key==='ArrowLeft')active()[name].x-=delta;
-        if(event.key==='ArrowRight')active()[name].x+=delta;
-        if(event.key==='ArrowUp')active()[name].y-=delta;
-        if(event.key==='ArrowDown')active()[name].y+=delta;
+        // With snapping active, arrow keys advance exactly one grid cell.
+        // Shift advances three cells; with snapping off, use fine 0.25% steps.
+        const multiple=event.shiftKey?3:1;
+        const stepX=gridEnabled?100/GRID_COLUMNS*multiple:(event.shiftKey?1:0.25);
+        const stepY=gridEnabled?100/GRID_ROWS*multiple:(event.shiftKey?1:0.25);
+        if(event.key==='ArrowLeft')active()[name].x-=stepX;
+        if(event.key==='ArrowRight')active()[name].x+=stepX;
+        if(event.key==='ArrowUp')active()[name].y-=stepY;
+        if(event.key==='ArrowDown')active()[name].y+=stepY;
         apply();fitPosition(name);apply();changed();
       });
       items[name]=item;
@@ -193,6 +223,8 @@ const PiLayoutEditor=(()=>{
   }
   function init(){
     addHandles();
+    restoreGridPreference();
+    node('layoutSnapGrid').addEventListener('change',event=>setGrid(event.target.checked));
     node('layoutMode').addEventListener('change',e=>{
       if(!ready)return;
       mode=e.target.value==='single'?'single':'alternate';
