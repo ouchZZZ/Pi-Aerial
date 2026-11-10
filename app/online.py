@@ -391,6 +391,13 @@ def lookup(clip_id: str) -> dict | None:
 def cached_file(clip_id: str) -> Path | None:
     path = CACHE_FOLDER / (clip_id + ".mp4")
     if path.is_file() and not path.is_symlink():
+        # Old releases incorrectly stored QuickTime MOV bytes as .mp4.
+        # Invalidate them so the new worker can remux into actual MP4.
+        with path.open("rb") as stream:
+            header = stream.read(12)
+        if header[8:12] == b"qt  ":
+            path.unlink(missing_ok=True)
+            return None
         path.touch()
         return path
     return None
@@ -425,6 +432,9 @@ def _cache_worker(entry: dict) -> None:
         final = CACHE_FOLDER / (ident + ".mp4")
         if final.exists():
             return
+        # Remove incomplete files left by a crashed older download.
+        temp.unlink(missing_ok=True)
+        muxed.unlink(missing_ok=True)
         provider = entry["provider"]
         opener = urllib.request.build_opener(SafeRedirect(provider),
                                               urllib.request.HTTPSHandler(context=_tls_context()))
