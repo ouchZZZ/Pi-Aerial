@@ -68,13 +68,13 @@ def can_stream_copy(stream: dict) -> bool:
     )
 
 
-def normalize_video(source: Path, output: Path) -> str:
+def normalize_video(source: Path, output: Path, max_bytes: int = MAX_BYTES) -> str:
     """Serialize all local and online normalization jobs to protect Pi 4."""
     with CONVERSION_SLOT:
-        return _normalize_video_locked(source, output)
+        return _normalize_video_locked(source, output, max_bytes)
 
 
-def _normalize_video_locked(source: Path, output: Path) -> str:
+def _normalize_video_locked(source: Path, output: Path, max_bytes: int) -> str:
     """Create complete faststart MP4; return 'copy' or 'transcode'."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -108,7 +108,7 @@ def _normalize_video_locked(source: Path, output: Path) -> str:
         header = result.read(12)
     if header[4:8] != b"ftyp" or header[8:12] == b"qt  ":
         raise ValueError("ffmpeg не создал совместимый MP4")
-    if not 1024 <= output.stat().st_size <= MAX_BYTES:
+    if not 1024 <= output.stat().st_size <= max_bytes:
         raise ValueError("Готовое видео пустое или слишком большое")
     # Verify output itself; copy mode must not silently preserve unsupported codecs.
     verified = probe_video(output)
