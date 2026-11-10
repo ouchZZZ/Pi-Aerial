@@ -455,6 +455,10 @@ def cached_file(clip_id: str) -> Path | None:
         if not marker.is_symlink() and marker.is_file():
             if marker.read_text(encoding="utf8") == CACHE_PROFILE:
                 return path
+        with LOCK:
+            if clip_id in ACTIVE:
+                # Converter has published the output but not its marker yet.
+                return None
         path.unlink(missing_ok=True)
         marker.unlink(missing_ok=True)
     return None
