@@ -361,8 +361,8 @@ def refresh_catalog(force=False) -> None:
         last_attempt = float(state.get("attempted") or state.get("updated") or 0)
         # Force a first refresh when switching from legacy tvOS 11 to tvOS 26.
         outdated_apple = name == "apple" and state.get("feed") != "tvos26"
-        if not outdated_apple and time.time() - last_attempt < (
-                60 if force else REFRESH_SECONDS):
+        elapsed = time.time() - last_attempt
+        if elapsed < (60 if force or outdated_apple else REFRESH_SECONDS):
             continue
         attempted = time.time()
         try:
