@@ -61,7 +61,7 @@ def test_screen_and_protected_api(monkeypatch):
     with TestClient(main.app) as client:
         assert client.get('/').status_code == 200
         assert client.get('/admin').status_code == 200
-        assert client.get('/api/health').json()['version'] == '0.2.0'
+        assert client.get('/api/health').json()['version'] == (Path(__file__).resolve().parents[1] / 'VERSION').read_text().strip()
         assert client.get('/api/public').status_code == 200
         assert client.get('/api/admin/status').status_code == 401
         csrf = login_client(client)
