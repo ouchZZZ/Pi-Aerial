@@ -167,6 +167,7 @@ test('both OSD blocks alternate sides when a video starts playing', async () => 
     await h.context.poll();
     assert.equal(isRight('clockCard'), right);
     assert.equal(isRight('clipFooter'), right);
+    assert.equal(isRight('calendarCard'), !right);
     if (index < 2) h.video.dispatch('ended');
   }
 });

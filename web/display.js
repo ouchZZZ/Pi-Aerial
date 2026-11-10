@@ -27,30 +27,43 @@ function zoneDateParts(){
   const h=new Intl.DateTimeFormat('en-GB',{timeZone:zone,hour:'2-digit',hourCycle:'h23'}).format(now);
   return {now,hour:Number(h)};
 }
+let calendarDay;
+function drawCalendar(now, timeZone){
+  const dayKey=new Intl.DateTimeFormat('sv-SE',{timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
+  if(dayKey===calendarDay)return;
+  calendarDay=dayKey;
+  const [year,month,day]=dayKey.split('-').map(Number);
+  setText('weekday',new Intl.DateTimeFormat('ru-RU',{timeZone,weekday:'long'}).format(now));
+  setText('date',new Intl.DateTimeFormat('ru-RU',{timeZone,day:'numeric',month:'long',year:'numeric'}).format(now));
+  const firstDay=(new Date(Date.UTC(year,month-1,1)).getUTCDay()+6)%7;
+  const days=new Date(Date.UTC(year,month,0)).getUTCDate();
+  const headings=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+  $('monthGrid').innerHTML=headings.map(label=>'<span class="day-label">'+label+'</span>').join('')+
+    '<span></span>'.repeat(firstDay)+
+    Array.from({length:days},(_,index)=>{
+      const number=index+1;
+      return number===day?'<span aria-current="date">'+number+'</span>':'<span>'+number+'</span>';
+    }).join('');
+}
 function drawTime(){
   if(!state)return;
   const c=state.settings;
   const {now,hour}=zoneDateParts();
   const locale='ru-RU';
   const clock=new Intl.DateTimeFormat(locale,{timeZone:c.timezone,hour:'2-digit',minute:'2-digit',hourCycle:c.time_format==='12'?'h12':'h23'}).format(now);
-  const date=new Intl.DateTimeFormat(locale,{timeZone:c.timezone,weekday:'long',day:'numeric',month:'long'}).format(now);
   setText('clock',clock);
-  setText('date',date.charAt(0).toUpperCase()+date.slice(1));
+  if(c.show_date)drawCalendar(now,c.timezone);
   setText('city',c.city||'');
   const night=c.night_mode&&(c.night_start<=c.night_end?(hour>=c.night_start&&hour<c.night_end):(hour>=c.night_start||hour<c.night_end));
   setStyle('nightShade','opacity',night?String(1-c.night_opacity):'0');
-  // Move fixed UI elements just a little to reduce persistent static pixels on OLED.
-  const offset=c.clock_shift?Math.floor(now.getTime()/600000)%4:0;
-  const dx=[0,14,-9,6][offset],dy=[0,-8,10,3][offset];
-  setStyle('clockCard','marginLeft',dx+'px');
-  setStyle('clockCard','marginRight',-dx+'px');
-  setStyle('clockCard','marginTop',dy+'px');
 }
 function showWeather(){
   if(!state)return;
   const w=state.weather,c=state.settings;
   setHidden('clock',!c.show_clock);
-  setHidden('date',!c.show_date);
+  setHidden('calendarCard',!c.show_date);
+  setHidden('clockCard',!c.show_clock&&!c.show_weather);
+  setHidden('city',!c.show_weather);
   setHidden('weather',!c.show_weather);
   if(!c.show_weather)return;
   if(!w.available){
@@ -151,7 +164,9 @@ function renderModules(){
 function sendModuleData(frame){frame.contentWindow?.postMessage({type:'aerial:data',config:state?.settings,weather:state?.weather,time:Date.now()},'*');}
 function renderOsdPosition(){
   const sideClass=osdRight?' osd-right':'';
-  const positionClass='clock-card '+state.settings.clock_position+sideClass;
+  const positionClass='clock-card'+sideClass;
+  const calendarClass='calendar-card'+(osdRight?'':' osd-right');
+  if($('calendarCard').className!==calendarClass)$('calendarCard').className=calendarClass;
   if($('clockCard').className!==positionClass)$('clockCard').className=positionClass;
   const footerClass='footer'+sideClass;
   if($('clipFooter').className!==footerClass)$('clipFooter').className=footerClass;
