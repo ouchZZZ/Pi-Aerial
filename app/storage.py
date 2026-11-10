@@ -22,8 +22,8 @@ ONLINE_CACHE_RESERVE_GB = 5
 GIB = 1024 ** 3
 
 DEFAULTS = {
-    'city': 'Саяногорск', 'latitude': 53.1000, 'longitude': 91.4000,
-    'timezone': 'Asia/Krasnoyarsk', 'show_clock': True,
+    'city': 'Москва', 'latitude': 55.7558, 'longitude': 37.6173,
+    'timezone': 'Europe/Moscow', 'language': 'ru', 'show_clock': True,
     'show_date': True, 'show_weather': True,
     'time_format': '24', 'clock_position': 'bottom-left',
     'video_mode': 'shuffle', 'video_interval_minutes': 0,
@@ -96,9 +96,16 @@ def update_settings(new: dict) -> dict:
     if set(new) - allowed:
         raise ValueError(f"Неизвестные параметры: {', '.join(sorted(set(new) - allowed))}")
     result = {**settings(), **new}
+    if result['language'] not in ('ru', 'en'):
+        raise ValueError('Unsupported interface language')
     if not (isinstance(result['city'], str) and 1 <= len(result['city'].strip()) <= 70):
         raise ValueError('Неверное название города')
-    if not (-90 <= float(result['latitude']) <= 90 and -180 <= float(result['longitude']) <= 180):
+    try:
+        latitude, longitude = float(result['latitude']), float(result['longitude'])
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError('Неверные координаты') from None
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise ValueError('Неверные координаты')
         raise ValueError('Неверные координаты')
     try:
         ZoneInfo(result['timezone'])
