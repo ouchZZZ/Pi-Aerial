@@ -177,10 +177,7 @@ function changeVideo(){
   selectedFile=selected.v.id||selected.v.url;
   selectedVideo=selected.v;
   setText('clipName',selected.v.credit||'ВИДЕОЗАСТАВКА');
-  const description=typeof selected.v.description==='string'
-    ?selected.v.description.trim().slice(0,220):'';
-  setText('clipDescription',description);
-  setHidden('clipDescription',!description);
+  renderClipDescription(0);
   video.classList.remove('ready');
   video.src=selected.v.url;
   video.load();
@@ -240,6 +237,17 @@ async function poll(){
     for(const frame of $('moduleLayer').querySelectorAll('iframe'))sendModuleData(frame);
   }catch(e){console.warn('Pi Aerial: status unavailable',e);}
 }
+function renderClipDescription(second){
+  let description=selectedVideo?.description||'';
+  for(const caption of selectedVideo?.captions||[]){
+    if(caption.second>second)break;
+    description=caption.text;
+  }
+  description=description.trim().slice(0,220);
+  setText('clipDescription',description);
+  setHidden('clipDescription',!description);
+}
+video.addEventListener('timeupdate',()=>renderClipDescription(video.currentTime));
 video.addEventListener('ended',changeVideo);
 video.addEventListener('error',()=>reportPlaybackFailure(playAttempt,video.error));
 setInterval(drawTime,10000);

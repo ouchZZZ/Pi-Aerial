@@ -10,6 +10,7 @@ import html
 import io
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -204,7 +205,7 @@ def _clip(provider: str, source_id: str, url: str, title: str,
             "page": page if page.startswith("https://") else ""}
 
 
-def _apple_manifest() -> dict | list:
+def _apple_manifest() -> tuple[dict | list, dict]:
     """Safely parse Apple's tvOS 26 TAR feed without extracting files to disk."""
     req = urllib.request.Request(
         SOURCE_URLS["apple"],
@@ -215,10 +216,25 @@ def _apple_manifest() -> dict | list:
     if len(payload) > 12 * 1024 * 1024:
         raise ValueError("Apple TAR превышает 12 МБ")
 
+    translations = {}
+
     def entries_from_tar(data: bytes, nested: bool = False) -> dict | list:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
             members = [item for item in archive.getmembers()
                        if item.isfile() and not item.issym() and not item.islnk()]
+            for member in members:
+                path = Path(member.name)
+                language = path.parent.name
+                if (path.name != "Localizable.nocache.strings"
+                        or language not in ("ru.lproj", "en.lproj")
+                        or member.size > 2 * 1024 * 1024):
+                    continue
+                try:
+                    strings = plistlib.loads(archive.extractfile(member).read())
+                except (ValueError, OverflowError):
+                    continue
+                if isinstance(strings, dict):
+                    translations[language] = strings
             for member in members:
                 if Path(member.name).name == "entries.json":
                     if member.size > 4 * 1024 * 1024:
@@ -236,11 +252,13 @@ def _apple_manifest() -> dict | list:
                             return entries_from_tar(file.read(), nested=True)
         raise ValueError("Apple TAR не содержит entries.json")
 
-    return entries_from_tar(payload)
+    raw = entries_from_tar(payload)
+    return raw, {**translations.get('en.lproj', {}), **translations.get('ru.lproj', {})}
 
 
 def _apple() -> list[dict]:
-    raw = _apple_manifest()
+    manifest = _apple_manifest()
+    raw, strings = manifest if isinstance(manifest, tuple) else (manifest, {})
     entries = raw if isinstance(raw, list) else (
         raw.get("assets") or raw.get("entries") or [])
     if not isinstance(entries, list):
@@ -274,14 +292,32 @@ def _apple() -> list[dict]:
         seen.add(source_id)
         title = str(e.get("name") or e.get("accessibilityLabel")
                     or e.get("id") or "Apple Aerial")
+        name_key = e.get("localizedNameKey")
+        if isinstance(name_key, str):
+            title = _description(strings.get(name_key)) or title
+        captions = []
+        points = e.get("pointsOfInterest")
+        if isinstance(points, dict):
+            for second, key in points.items():
+                if (not isinstance(second, str) or not re.fullmatch(r"[0-9]{1,6}", second)
+                        or not isinstance(key, str)):
+                    continue
+                caption = _description(strings.get(key))
+                if caption:
+                    captions.append({"second": int(second), "text": caption})
+            captions.sort(key=lambda caption: caption["second"])
         description = _description(
             e.get("description"), e.get("localizedDescription"),
             *(item.get("description") for item in items if isinstance(item, dict)))
         if description.casefold() == title.casefold():
             description = ""
+        if not description and captions:
+            description = captions[0]["text"]
         clip = _clip("apple", source_id, selected, title,
                      "Apple Aerial", "https://www.apple.com/tv/", description)
         if clip:
+            if captions:
+                clip['captions'] = captions
             result.append(clip)
     return result[:250]
 
@@ -430,6 +466,7 @@ def list_clips() -> list[dict]:
                            "provider": provider, "credit": item.get("credit", ""),
                            "page": item.get("page", ""),
                            "description": item.get("description", ""),
+                           "captions": item.get("captions", []),
                            "cached": cached})
     return result
 
