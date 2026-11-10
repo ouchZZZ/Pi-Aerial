@@ -38,10 +38,21 @@ function changeVideo(){
   $('videoIndex').textContent=`${selected.i+1} / ${videos.length}`;
   video.classList.remove('ready');
   video.src=selected.v.url;video.load();
-  video.play().then(()=>video.classList.add('ready')).catch(()=>{
-    rejectedUntil.set(selectedFile,Date.now()+180000);
-    $('clipName').textContent='НЕ УДАЛОСЬ ВОСПРОИЗВЕСТИ ВИДЕО';
-    changeTimer=setTimeout(changeVideo,3000);
+  const playingId=selectedFile;
+  video.play().then(()=>{
+    if(playingId===selectedFile)video.classList.add('ready');
+  }).catch(err=>{
+    if(playingId!==selectedFile)return;
+    const code=video.error?.code||0;
+    rejectedUntil.set(playingId,Date.now()+180000);
+    console.error('Pi Aerial playback rejected',{
+      id:playingId,provider:selected.v.provider||'local',name:selected.v.name,
+      error:err?.name||'unknown',message:err?.message||'',mediaError:code,
+      mp4Support:video.canPlayType('video/mp4; codecs="avc1.42E01E"')
+    });
+    $('clipName').textContent='ОШИБКА ВИДЕО: '+(err?.name||'неизвестная')+' · код '+code;
+    clearTimeout(changeTimer);
+    changeTimer=setTimeout(changeVideo,4000);
   });
   const minutes=Number(cfg.video_interval_minutes);
   if(minutes>0)changeTimer=setTimeout(changeVideo,minutes*60000);
@@ -49,5 +60,16 @@ function changeVideo(){
 function renderModules(){const layer=$('moduleLayer');layer.replaceChildren();for(const m of state.modules||[]){const frame=document.createElement('iframe');frame.className='widget '+(m.position||'top-right');frame.sandbox='allow-scripts';frame.title=m.name||m.id;frame.src='/modules/'+encodeURIComponent(m.id);frame.addEventListener('load',()=>sendModuleData(frame));layer.appendChild(frame);}}
 function sendModuleData(frame){frame.contentWindow?.postMessage({type:'aerial:data',config:state?.settings,weather:state?.weather,time:Date.now()},'*');}
 async function poll(){try{const r=await fetch('/api/public',{cache:'no-store'});if(!r.ok)throw Error(r.status);const next=await r.json();const first=!state;const oldIds=state?.modules.map(x=>x.id+':'+x.version).join('|');const newIds=next.modules.map(x=>x.id+':'+x.version).join('|');const shouldReload=lastReload!==null&&next.reload_counter!==lastReload;lastReload=next.reload_counter;if(shouldReload){location.reload();return;}const shouldChange=listChanged(next.videos);state=next;videos=next.videos;$('clockCard').className='clock-card '+state.settings.clock_position;drawTime();showWeather();if(first||shouldChange)changeVideo();if(first||oldIds!==newIds)renderModules();for(const frame of $('moduleLayer').querySelectorAll('iframe'))sendModuleData(frame);}catch(e){console.warn('Pi Aerial: status unavailable',e);}}
-video.addEventListener('ended',changeVideo);video.addEventListener('error',()=>{video.classList.remove('ready');rejectedUntil.set(selectedFile,Date.now()+180000);clearTimeout(changeTimer);changeTimer=setTimeout(changeVideo,3500);});
+video.addEventListener('ended',changeVideo);video.addEventListener('error',()=>{
+  const code=video.error?.code||0;
+  console.error('Pi Aerial media error',{
+    id:selectedFile,code,message:video.error?.message||'',
+    networkState:video.networkState,readyState:video.readyState,
+    h264Support:video.canPlayType('video/mp4; codecs="avc1.42E01E"')
+  });
+  video.classList.remove('ready');
+  rejectedUntil.set(selectedFile,Date.now()+180000);
+  $('clipName').textContent='ОШИБКА ВИДЕО: код '+code;
+  clearTimeout(changeTimer);changeTimer=setTimeout(changeVideo,3500);
+});
 setInterval(drawTime,1000);setInterval(poll,30000);poll();
