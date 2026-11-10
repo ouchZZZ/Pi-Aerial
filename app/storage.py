@@ -27,7 +27,7 @@ DEFAULTS = {
     'night_opacity': 0.45, 'clock_shift': True,
     'enabled_modules': {},
     'local_videos_enabled': True,
-    'online_sources': {'apple': True, 'nasa': True, 'pixabay': False, 'pexels': False},
+    'online_sources': {'apple': True, 'nasa': True},
     'online_cache_enabled': True,
     'online_cache_gb': 12,
 }
@@ -65,7 +65,15 @@ def read_json(path: Path, fallback: dict | None = None) -> dict:
 
 def settings() -> dict:
     with LOCK:
-        return {**DEFAULTS, **read_json(DATA / 'settings.json')}
+        result = {**DEFAULTS, **read_json(DATA / 'settings.json')}
+        # Upgrade old settings transparently without dropping Apple/NASA choices.
+        sources = result.get('online_sources')
+        if isinstance(sources, dict):
+            result['online_sources'] = {
+                name: sources.get(name, enabled)
+                for name, enabled in DEFAULTS['online_sources'].items()
+            }
+        return result
 
 
 def update_settings(new: dict) -> dict:
@@ -83,7 +91,7 @@ def update_settings(new: dict) -> dict:
         raise ValueError('Неизвестный часовой пояс') from None
     sources = result.get('online_sources')
     if (not isinstance(sources, dict)
-            or set(sources) != {'apple', 'nasa', 'pixabay', 'pexels'}
+            or set(sources) != {'apple', 'nasa'}
             or any(not isinstance(value, bool) for value in sources.values())):
         raise ValueError('Неверные переключатели онлайн-источников')
     if not isinstance(result['online_cache_enabled'], bool):
