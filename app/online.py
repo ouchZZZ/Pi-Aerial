@@ -9,12 +9,15 @@ import hashlib
 import json
 import os
 import shutil
+import ssl
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+import certifi
 
 from .storage import DATA, atomic_json, read_json, settings
 
@@ -73,11 +76,29 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
+def _tls_context() -> ssl.SSLContext:
+    """Trust the system store plus current public roots from certifi.
+
+    Verification and hostname checking stay enabled. Do not use unverified contexts.
+    """
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return context
+
+
 def _http_json(url: str, *, headers=None, timeout=9) -> dict | list:
     req = urllib.request.Request(url, headers={"User-Agent": "PiAerial/0.3 (local TV)",
                                                 "Accept": "application/json", **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        payload = resp.read(4 * 1024 * 1024 + 1)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_tls_context()) as resp:
+            payload = resp.read(4 * 1024 * 1024 + 1)
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ssl.SSLCertVerificationError):
+            raise ValueError(
+                "HTTPS-сертификат не прошёл проверку системных и certifi CA. "
+                "Проверьте дату Raspberry Pi, ca-certificates и возможный HTTPS-перехват в сети."
+            ) from exc
+        raise
     if len(payload) > 4 * 1024 * 1024:
         raise ValueError("Catalog too large")
     return json.loads(payload)
@@ -242,7 +263,10 @@ def refresh_catalog(force=False) -> None:
         last_attempt = float(state.get("attempted") or state.get("updated") or 0)
         # API responses must remain cached at least 24h for Pixabay/Pexels.
         # Even failures wait for the next permitted attempt; avoid API hammering.
-        if time.time() - last_attempt < minimum:
+        # Explicit refresh may retry Apple/NASA after the operator fixes TLS,
+        # but never violates the 24h API-cache policy for Pixabay/Pexels.
+        is_manual_retry = force and name in ("apple", "nasa")
+        if time.time() - last_attempt < (60 if is_manual_retry else minimum):
             continue
         attempted = time.time()
         try:
@@ -336,7 +360,8 @@ def _cache_worker(entry: dict) -> None:
         if final.exists():
             return
         provider = entry["provider"]
-        opener = urllib.request.build_opener(SafeRedirect(provider))
+        opener = urllib.request.build_opener(SafeRedirect(provider),
+                                              urllib.request.HTTPSHandler(context=_tls_context()))
         req = urllib.request.Request(entry["remote_url"],
                                      headers={"User-Agent": "PiAerial/0.3"})
         total = 0

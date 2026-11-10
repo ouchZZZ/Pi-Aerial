@@ -107,3 +107,56 @@ def test_source_settings_validation():
         update_settings({"online_sources": {"apple": True}})
     with pytest.raises(ValueError):
         update_settings({"online_cache_gb": 1000})
+
+
+def test_tls_certificate_verification_stays_enabled():
+    import ssl
+    ctx = online._tls_context()
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname
+
+
+def test_force_refresh_apple_but_not_commercial_api(monkeypatch, tmp_path):
+    now = [1000000.0]
+    monkeypatch.setattr(online.time, 'time', lambda: now[0])
+    monkeypatch.setattr(online, 'CATALOG_FILE', tmp_path / 'catalog.json')
+    calls = {'apple': 0, 'pixabay': 0}
+
+    def make_fetch(provider):
+        def fetch():
+            calls[provider] += 1
+            return [online._clip(
+                provider, 'one', 'https://sylvan.apple.com/video.mp4'
+                if provider == 'apple' else 'https://cdn.pixabay.com/video.mp4',
+                'Test', 'Owner', 'https://example.org/'
+            )]
+        return fetch
+
+    monkeypatch.setattr(online, 'FETCHERS', {
+        'apple': make_fetch('apple'), 'pixabay': make_fetch('pixabay')
+    })
+    monkeypatch.setattr(online, 'settings', lambda: {
+        'online_sources': {'apple': True, 'pixabay': True}
+    })
+    online.refresh_catalog()
+    online.refresh_catalog(force=True)
+    assert calls == {'apple': 1, 'pixabay': 1}
+    now[0] += 61
+    online.refresh_catalog(force=True)
+    assert calls == {'apple': 2, 'pixabay': 1}
+
+
+def test_tls_errors_are_reported_without_disabling_verification(monkeypatch):
+    import ssl
+    import urllib.error
+    err = ssl.SSLCertVerificationError(
+        1, 'certificate verify failed: unable to get local issuer certificate'
+    )
+
+    def fail(*args, **kwargs):
+        assert kwargs.get('context').check_hostname
+        raise urllib.error.URLError(err)
+
+    monkeypatch.setattr(online.urllib.request, 'urlopen', fail)
+    with pytest.raises(ValueError, match='HTTPS-сертификат'):
+        online._http_json('https://sylvan.apple.com/Aerials/2x/entries.json')
