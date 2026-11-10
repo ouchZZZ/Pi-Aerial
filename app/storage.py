@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -29,6 +30,7 @@ DEFAULTS = {
     'video_mode': 'shuffle', 'video_interval_minutes': 0,
     'night_mode': True, 'night_start': 23, 'night_end': 7,
     'night_opacity': 0.45, 'clock_shift': True,
+    'osd_layout': {},  # Optional custom positions, in viewport percentages.
     'enabled_modules': {},
     'local_videos_enabled': True,
     'online_sources': {'apple': True, 'nasa': True},
@@ -138,6 +140,19 @@ def update_settings(new: dict) -> dict:
             raise ValueError(f'Неверный час {key}')
     if not (0.1 <= float(result['night_opacity']) <= 1.0):
         raise ValueError('Неверная яркость ночного режима')
+    layout = result['osd_layout']
+    block_names = {'clock', 'weather', 'calendar', 'footer'}
+    if not isinstance(layout, dict) or (layout and set(layout) != block_names):
+        raise ValueError('Неверный набор блоков OSD')
+    for block, geometry in layout.items():
+        if not isinstance(geometry, dict) or set(geometry) != {'x', 'y', 'scale'}:
+            raise ValueError(f'Неверное расположение блока {block}')
+        for name, low, high in (('x', 0, 100), ('y', 0, 100),
+                                ('scale', 0.4, 2.5)):
+            value = geometry[name]
+            if (type(value) not in (int, float) or not math.isfinite(value)
+                    or not low <= value <= high):
+                raise ValueError(f'Недопустимое значение {block}.{name}')
     with LOCK:
         atomic_json(DATA / 'settings.json', result)
     return result
