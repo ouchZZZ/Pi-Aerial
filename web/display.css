@@ -45,3 +45,14 @@ body.playing-once :is(#shade,#clockCard,#calendarCard,#moduleLayer,#clipFooter){
 /* Weather source attribution; hidden along with the weather OSD. */
 .weather-credit{font-size:clamp(9px,.75vw,13px);font-weight:400;opacity:.75;letter-spacing:0}
 .weather-credit a{color:inherit;text-decoration:underline;text-decoration-color:#ffffff66;text-underline-offset:2px}
+
+/* Independent OSD anchors; unchanged layouts keep the legacy clock/calender rotation. */
+.weather-card{position:absolute;z-index:5;top:36%;left:6%;width:max-content;max-width:43%;text-shadow:-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000,1px 1px 2px #000,0 2px 8px #000}
+.weather-card.osd-right{left:auto;right:6%;text-align:right}
+.weather-card.osd-right .weather{margin-left:auto;text-align:right}
+.weather-card.osd-right .forecast{margin-left:auto}
+body.custom-osd-layout .clock-card,body.custom-osd-layout .weather-card,body.custom-osd-layout .calendar-card,body.custom-osd-layout .footer{transform-origin:top left;right:auto;bottom:auto;text-align:left;max-width:90vw}
+body.custom-osd-layout .footer{width:max-content}
+body.custom-osd-layout .weather{margin-left:0;text-align:left}
+body.custom-osd-layout .forecast{margin-left:0}
+body.layout-preview #nightShade{opacity:0!important}
