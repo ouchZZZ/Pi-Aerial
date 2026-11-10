@@ -1,4 +1,4 @@
-"""Read-only GitHub source for a private Pi-Aerial repository via SSH deploy key.
+"""Read-only GitHub source over public HTTPS or legacy private SSH deploy key.
 
 Only the fixed, locally configured repository and main branch are accepted.
 No URL, branch, or shell command comes from a browser request.
@@ -17,7 +17,8 @@ from pathlib import Path
 from . import bundles
 from .storage import BASE, DATA, read_json
 
-EXPECTED_REPOSITORY = 'git@github.com:ouchZZZ/Pi-Aerial.git'
+PUBLIC_REMOTE = 'https://github.com/ouchZZZ/Pi-Aerial.git'
+LEGACY_SSH_REMOTE = 'git@github.com:ouchZZZ/Pi-Aerial.git'
 SHA_PATTERN = re.compile(r'[a-f0-9]{40}\Z')
 
 
@@ -26,21 +27,29 @@ def _config():
     if not config.get('enabled'):
         raise ValueError('GitHub не настроен: установите приложение из Git-клона через install.sh')
     remote = config.get('remote')
-    if remote != EXPECTED_REPOSITORY:
+    if remote == PUBLIC_REMOTE:
+        return remote, None
+    if remote != LEGACY_SSH_REMOTE:
         raise ValueError('Некорректный GitHub-репозиторий в конфигурации')
-    key = Path(config.get('ssh_key', '')).expanduser()
+    raw_key = config.get('ssh_key')
+    if not isinstance(raw_key, str) or not raw_key:
+        raise ValueError('SSH deploy key не настроен')
+    key = Path(raw_key).expanduser()
     if not key.is_file() or key.is_symlink():
         raise ValueError('SSH deploy key не найден')
     return remote, key
 
 
-def _git_env(key: Path):
+def _git_env(key: Path | None):
     env = os.environ.copy()
     env['GIT_TERMINAL_PROMPT'] = '0'
-    env['GIT_SSH_COMMAND'] = (
-        f'ssh -i {key} -o IdentitiesOnly=yes -o BatchMode=yes '
-        '-o StrictHostKeyChecking=yes -o ConnectTimeout=10'
-    )
+    env.pop('GIT_SSH_COMMAND', None)
+    if key is not None:
+        import shlex
+        env['GIT_SSH_COMMAND'] = (
+            f'ssh -i {shlex.quote(str(key))} -o IdentitiesOnly=yes -o BatchMode=yes '
+            '-o StrictHostKeyChecking=yes -o ConnectTimeout=10'
+        )
     return env
 
 

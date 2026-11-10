@@ -182,12 +182,9 @@ async function loadLibrary(){
     toast(e.message);
   }finally{libraryLoading=false}
 }
-function openLibraryPreview(title,url,filename){
+function openLibraryPreview(title,url){
   const dialog=$('libraryPreviewDialog'),player=$('libraryPreviewPlayer');
   $('libraryPreviewTitle').textContent=title;
-  const download=$('libraryPreviewDownload');
-  download.href=url;
-  download.download=filename;
   player.src=url;
   dialog.showModal();
   player.play().catch(()=>{});
@@ -223,7 +220,7 @@ function renderLibrary(onlineVideos){
     if(v.cached){
       const preview=textNode('button','Просмотр');
       preview.addEventListener('click',()=>openLibraryPreview(
-        v.name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview',v.name+'.mp4'));
+        v.name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview'));
       const remove=textNode('button','Удалить файл');
       remove.addEventListener('click',async()=>{
         if(!confirm('Удалить готовый MP4? Запрет повторной загрузки останется.'))return;
@@ -259,7 +256,7 @@ function renderLibrary(onlineVideos){
     const row=line(v.name,'Локальная загрузка · '+progressSize(v.bytes));
     const controls=document.createElement('div');controls.className='inline-actions library-actions';
     const preview=textNode('button','Просмотр');
-    preview.addEventListener('click',()=>openLibraryPreview(v.name,v.url,v.name));
+    preview.addEventListener('click',()=>openLibraryPreview(v.name,v.url));
     const remove=textNode('button','Удалить файл');
     remove.addEventListener('click',async()=>{
       if(!confirm('Удалить загруженный вами файл с карты?'))return;

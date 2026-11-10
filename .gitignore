@@ -11,3 +11,21 @@ data/
 .idea/
 .vscode/
 .DS_Store
+
+# Media, runtime files and secrets are local, never Git payloads.
+*.mp4
+*.m4v
+*.mov
+*.mkv
+*.webm
+*.part
+*.ready
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.jsonl
+*.p12
+*.pfx
+.env.*
+!.env.example
