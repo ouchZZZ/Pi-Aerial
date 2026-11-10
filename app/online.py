@@ -73,28 +73,24 @@ def allowed_video_url(url: str, provider: str) -> bool:
 
 
 def nasa_https_url(url: str) -> str | None:
-    """NASA manifests sometimes publish http links to assets with valid HTTPS.
-
-    Upgrade only NASA-owned hosts; never allow arbitrary HTTP media.
-    """
+    """Upgrade only NASA-owned HTTP asset links to verified HTTPS."""
     if not isinstance(url, str) or len(url) > 2048:
         return None
     try:
         parsed = urllib.parse.urlsplit(url)
         if (parsed.scheme == "http" and parsed.username is None
-                and parsed.password is None and parsed.port in (None, 80)):
-            if parsed.hostname and (
-                parsed.hostname.lower() == "nasa.gov"
-                or parsed.hostname.lower().endswith(".nasa.gov")
-            ):
-                parsed = parsed._replace(scheme="https", netloc=parsed.hostname.lower())
-                url = urllib.parse.urlunsplit(parsed)
-        parsed = urllib.parse.urlsplit(url)
-        # Some NASA asset IDs contain literal spaces in returned URLs.
-        normalized_path = urllib.parse.quote(parsed.path, safe="/%:@!                url = urllib.parse.urlunsplit(parsed)
-        return url if allowed_video_url(url, "nasa") else None'()*+,;=-._~")
-        url = urllib.parse.urlunsplit(parsed._replace(path=normalized_path))
-        return url if allowed_video_url(url, "nasa") else None
+                and parsed.password is None and parsed.port in (None, 80)
+                and parsed.hostname and (
+                    parsed.hostname.lower() == "nasa.gov"
+                    or parsed.hostname.lower().endswith(".nasa.gov")
+                )):
+            parsed = parsed._replace(scheme="https", netloc=parsed.hostname.lower())
+        # NASA sometimes returns raw spaces in media asset paths.
+        parsed = parsed._replace(
+            path=urllib.parse.quote(parsed.path, safe="/%:._-~")
+        )
+        normalized = urllib.parse.urlunsplit(parsed)
+        return normalized if allowed_video_url(normalized, "nasa") else None
     except ValueError:
         return None
 
