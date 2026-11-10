@@ -19,7 +19,10 @@ jobs:
         with:
           node-version: '22'
       - name: Display JavaScript regression tests
-        run: node --test tests/display.test.cjs
+        run: node --test tests/*.test.cjs
+      - name: Check JavaScript syntax
+        run: |
+          for file in web/*.js; do node --check "$file"; done
       - name: Check Python syntax
         run: python -m compileall -q app tools
       - name: Check shell syntax
