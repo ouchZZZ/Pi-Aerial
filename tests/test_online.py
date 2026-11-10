@@ -107,6 +107,21 @@ def test_disabled_provider_never_surfaces(monkeypatch, tmp_path):
     assert online.lookup(clip["id"]) is None
 
 
+def test_cache_maximum_tracks_disk_size(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from app import storage
+
+    monkeypatch.setattr(storage, "DATA", tmp_path)
+    monkeypatch.setattr(
+        storage.shutil, "disk_usage",
+        lambda path: SimpleNamespace(total=128 * 1024**3, free=80 * 1024**3),
+    )
+    assert storage.max_online_cache_gb() == 123
+    storage.update_settings({"online_cache_gb": 100})
+    with pytest.raises(ValueError, match="123"):
+        storage.update_settings({"online_cache_gb": 124})
+
+
 def test_source_settings_validation():
     valid = {"apple": True, "nasa": True}
     update_settings({"online_sources": valid, "online_cache_gb": 12})
