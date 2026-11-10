@@ -61,10 +61,10 @@ function drawCalendar(now, timeZone){
   const days=new Date(Date.UTC(year,month,0)).getUTCDate();
   const headings=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
   $('monthGrid').innerHTML=headings.map(label=>'<span class="day-label">'+label+'</span>').join('')+
-    Array.from({length:firstDay+days},(_,index)=>{
+    Array.from({length:Math.ceil((firstDay+days)/7)*7},(_,index)=>{
       const number=index-firstDay+1;
       const date=new Date(Date.UTC(year,month-1,number));
-      const kind=number<1?'previous-month':calendarDayClass(date);
+      const kind=number<1?'previous-month':number>days?'next-month':calendarDayClass(date);
       const current=number===day?' aria-current="date"':'';
       return '<span class="'+kind+'"'+current+'>'+date.getUTCDate()+'</span>';
     }).join('');
