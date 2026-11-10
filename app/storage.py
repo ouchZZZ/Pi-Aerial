@@ -106,7 +106,6 @@ def update_settings(new: dict) -> dict:
         raise ValueError('Неверные координаты') from None
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         raise ValueError('Неверные координаты')
-        raise ValueError('Неверные координаты')
     try:
         ZoneInfo(result['timezone'])
     except (ZoneInfoNotFoundError, TypeError, ValueError):

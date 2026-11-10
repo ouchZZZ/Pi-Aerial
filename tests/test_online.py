@@ -279,6 +279,9 @@ def test_old_quicktime_cache_is_invalidated(monkeypatch, tmp_path):
 
 def test_apple_mov_cache_forces_transcode_and_removes_source(monkeypatch, tmp_path):
     import io
+    import threading
+    # A previous TestClient may have an unfinished daemon download.
+    monkeypatch.setattr(online, "DOWNLOAD_SLOT", threading.BoundedSemaphore(1))
     from types import SimpleNamespace
     monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
     monkeypatch.setattr(online, "PROCESSED_FILE", tmp_path / "processed.json")
@@ -317,6 +320,19 @@ def test_apple_mov_cache_forces_transcode_and_removes_source(monkeypatch, tmp_pa
     assert recorded
     assert not (tmp_path / (clip["id"] + ".part")).exists()
     assert clip["id"] in online._processed_ids()
+
+    
+def test_cache_worker_releases_its_original_slot(monkeypatch):
+    import threading
+    original = threading.BoundedSemaphore(1)
+    assert original.acquire(blocking=False)
+    replacement = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(online, "DOWNLOAD_SLOT", replacement)
+    monkeypatch.setattr(online, "settings", lambda: {"online_cache_enabled": False})
+    online._cache_worker({"id": "isolated-slot"}, original)
+    assert original.acquire(blocking=False)
+    with pytest.raises(ValueError):
+        replacement.release()  # It must still be at its maximum value.
 
 
 def test_nasa_http_manifest_links_are_upgraded(monkeypatch):
