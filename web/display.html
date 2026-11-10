@@ -1,0 +1,15 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pi Aerial · Экран</title>
+<link rel="stylesheet" href="/assets/display.css"></head>
+<body>
+<div id="landscape" aria-hidden="true"><span class="glow"></span><span class="ridge a"></span><span class="ridge b"></span></div>
+<video id="video" muted playsinline preload="auto"></video>
+<div id="shade"></div><div id="nightShade"></div>
+<div class="topline"><div class="brand">PI <span>●</span> AERIAL</div><div class="today" id="topDate"></div></div>
+<div id="clockCard" class="clock-card bottom-left">
+  <div id="clock" class="clock">--:--</div>
+  <div id="date" class="date">Загрузка часов</div>
+  <div id="weather" class="weather"><div class="wx-icon" id="wxIcon">◌</div><div class="wx-main"><span id="wxTemp">Погода загружается</span><small id="wxDetail"></small></div></div>
+</div>
+<div id="moduleLayer" class="module-layer"></div>
+<div class="footer"><span id="clipName">PI AERIAL · ЛОКАЛЬНЫЕ ВИДЕО</span><span id="videoIndex"></span></div>
+<script src="/assets/display.js" defer></script></body></html>

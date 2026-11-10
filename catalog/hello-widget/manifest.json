@@ -1,0 +1,9 @@
+{
+  "kind": "module",
+  "id": "hello-widget",
+  "name": "Тёплое приветствие",
+  "version": "0.1.0",
+  "description": "Пример независимого виджета, получающего данные от экрана",
+  "entry": "index.html",
+  "position": "top-right"
+}
