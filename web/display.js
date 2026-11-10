@@ -100,6 +100,8 @@ function changeVideo(){
     }
     setText('clipName',videos.length?'НЕ УДАЛОСЬ ПОЛУЧИТЬ ВИДЕО · ПОВТОР ЧЕРЕЗ 60 С':(state?.settings?.online_sources?.apple?'ПОДГОТОВКА APPLE AERIAL · ЗАГРУЗКА В КЕШ':'НЕТ ВИДЕО · ВКЛЮЧИТЕ ИСТОЧНИКИ'));
     setText('videoIndex','');
+    setText('clipDescription','');
+    setHidden('clipDescription',true);
     changeTimer=setTimeout(()=>{rejectedUntil.clear();changeVideo();},60000);
     return;
   }
@@ -115,6 +117,10 @@ function changeVideo(){
   selectedFile=selected.v.id||selected.v.url;
   selectedVideo=selected.v;
   setText('clipName',selected.v.credit||'PI AERIAL · ВИДЕОЗАСТАВКА');
+  const description=typeof selected.v.description==='string'
+    ?selected.v.description.trim().slice(0,220):'';
+  setText('clipDescription',description);
+  setHidden('clipDescription',!description);
   setText('videoIndex',(selected.i+1)+' / '+videos.length);
   video.classList.remove('ready');
   video.src=selected.v.url;
