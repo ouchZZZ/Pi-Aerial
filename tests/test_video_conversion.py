@@ -60,6 +60,15 @@ def test_copy_h264_in_background_without_quality_loss(monkeypatch, tmp_path):
     assert kwargs["timeout"] == 300
 
 
+def test_force_transcode_even_compatible_1080_h264(monkeypatch, tmp_path):
+    src, dest, calls = _fake_convert(monkeypatch, tmp_path, AVC)
+    assert vc.normalize_video(src, dest, force_transcode=True) == "transcode"
+    command, kwargs = calls[0]
+    assert command[command.index("-c:v") + 1] == "libx264"
+    assert "scale=1920:1080" in command[command.index("-vf") + 1]
+    assert kwargs["timeout"] == 1200
+
+
 def test_transcode_hevc_with_two_threads_and_scaled_1080p(monkeypatch, tmp_path):
     hevc = {**AVC, "codec_name": "hevc", "profile": "Main 10",
             "pix_fmt": "yuv420p10le", "width": 3840, "height": 2160,
