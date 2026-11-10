@@ -276,7 +276,7 @@ def test_apple_mov_cache_remux_uses_stream_copy(monkeypatch, tmp_path):
     monkeypatch.setattr(online.urllib.request, "build_opener",
                         lambda *args: FakeOpener())
     recorded = []
-    def fake_normalize(source, output):
+    def fake_normalize(source, output, on_progress=None):
         recorded.append(str(source))
         output.write_bytes(bytes.fromhex("000000186674797069736f6d") + b"M" * 2500)
         return "copy"
