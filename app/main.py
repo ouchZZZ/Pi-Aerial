@@ -8,12 +8,13 @@ import secrets
 import shutil
 import threading
 import time
+import urllib.error
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -60,7 +61,7 @@ async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'no-referrer'
-    response.headers['Cache-Control'] = 'no-store' if request.url.path.startswith(('/api/', '/assets/', '/admin')) else 'public, max-age=300'
+    response.headers.setdefault('Cache-Control', 'no-store' if request.url.path.startswith(('/api/', '/assets/', '/admin')) else 'public, max-age=300')
     if request.url.path.startswith('/admin'):
         response.headers['X-Frame-Options'] = 'DENY'
     return response
@@ -131,7 +132,7 @@ def module_content(module_id: str):
 
 
 @app.get('/media/online/{clip_id}')
-def online_video(clip_id: str):
+def online_video(clip_id: str, request: Request):
     entry = online.lookup(clip_id)
     if entry is None:
         raise HTTPException(404, 'Онлайн-ролик недоступен или источник выключен')
@@ -139,9 +140,41 @@ def online_video(clip_id: str):
     if path:
         return FileResponse(path, media_type='video/mp4',
                             headers={'Cache-Control': 'private, max-age=3600'})
+    requested_range = request.headers.get('range')
+    try:
+        upstream = online.open_video_stream(entry, requested_range)
+    except ValueError as exc:
+        raise HTTPException(416, str(exc)) from exc
+    except urllib.error.HTTPError as exc:
+        print(f'[video] {entry["provider"]} {clip_id}: HTTP {exc.code}', flush=True)
+        raise HTTPException(502, 'Видеосервер вернул ошибку') from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f'[video] {entry["provider"]} {clip_id}: {exc}', flush=True)
+        raise HTTPException(502, 'Не удалось подключиться к видеосерверу') from exc
+
+    headers = {'Cache-Control': 'no-store', 'Accept-Ranges': 'bytes'}
+    for name in ('Content-Length', 'Content-Range'):
+        value = upstream.headers.get(name)
+        if value:
+            headers[name] = value
+
+    # The upstream may label H.264/MOV as video/quicktime, which Chromium
+    # rejects. The catalog selects H.264 and we serve it as video/mp4.
+    def stream_chunks():
+        try:
+            while chunk := upstream.read(128 * 1024):
+                yield chunk
+        except Exception as exc:
+            print(f'[video] stream interrupted {clip_id}: {exc}', flush=True)
+        finally:
+            upstream.close()
+
     online.try_cache(entry)
-    return RedirectResponse(entry['remote_url'], status_code=307,
-                            headers={'Cache-Control': 'no-store'})
+    print(f'[video] {entry["provider"]} {clip_id}: upstream {upstream.status}; '
+          f'range={requested_range or "none"}; content-type={upstream.headers.get("Content-Type")}',
+          flush=True)
+    return StreamingResponse(stream_chunks(), status_code=upstream.status,
+                             media_type='video/mp4', headers=headers)
 
 
 @app.get('/api/admin/online/status')

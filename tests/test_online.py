@@ -160,3 +160,127 @@ def test_tls_errors_are_reported_without_disabling_verification(monkeypatch):
     monkeypatch.setattr(online.urllib.request, 'urlopen', fail)
     with pytest.raises(ValueError, match='HTTPS-сертификат'):
         online._http_json('https://sylvan.apple.com/Aerials/2x/entries.json')
+
+
+def test_nasa_multiple_queries_and_mov_fallback(monkeypatch):
+    urls = []
+
+    def fake(url, **kw):
+        urls.append(url)
+        if "/search?" in url:
+            if "earth+" in url or "earth&" in url:
+                return {"collection": {"items": [{"data": [{"nasa_id": "no-mp4",
+                                                              "title": "ISS Earth"}]}]}}
+            return {"collection": {"items": []}}
+        return {"collection": {"items": [
+            {"href": "https://images-assets.nasa.gov/video/earth~orig.mov"}]}}
+    monkeypatch.setattr(online, "_http_json", fake)
+    clips = online._nasa()
+    assert clips and clips[0]["remote_url"].endswith(".mov")
+    assert any("/asset/no-mp4" in url for url in urls)
+
+
+def test_range_validation_and_tls_only(monkeypatch):
+    calls = []
+    class FakeOpener:
+        def open(self, request, timeout):
+            calls.append((request.full_url, request.get_header("Range")))
+            return object()
+    monkeypatch.setattr(online.urllib.request, "build_opener",
+                        lambda *args: FakeOpener())
+    entry = online._clip(
+        "apple", "a", "https://sylvan.apple.com/Videos/ocean.mov",
+        "Ocean", "Apple", "https://www.apple.com/"
+    )
+    online.open_video_stream(entry, "bytes=0-")
+    assert calls[-1] == ("https://sylvan.apple.com/Videos/ocean.mov", "bytes=0-")
+    with pytest.raises(ValueError):
+        online.open_video_stream(entry, "bytes=0-10,30-40")
+    with pytest.raises(ValueError):
+        online.open_video_stream(entry, "bytes=abc")
+    with pytest.raises(ValueError):
+        online.open_video_stream({**entry, "remote_url": "http://127.0.0.1/private"})
+
+
+def test_http_video_range_proxy_responds_as_mp4(monkeypatch):
+    import io
+    from fastapi.testclient import TestClient
+    from app import main
+
+    entry = online._clip(
+        "apple", "a", "https://sylvan.apple.com/Videos/ocean.mov",
+        "Ocean", "Apple", "https://www.apple.com/"
+    )
+    class Upstream(io.BytesIO):
+        status = 206
+        def __init__(self):
+            super().__init__(b"test")
+            self.headers = {
+                "Content-Length": "4", "Content-Range": "bytes 0-3/100",
+                "Content-Type": "video/quicktime"
+            }
+
+    seen = []
+    monkeypatch.setattr(online, "lookup", lambda ident: entry)
+    monkeypatch.setattr(online, "cached_file", lambda ident: None)
+    monkeypatch.setattr(online, "try_cache", lambda entry: None)
+    monkeypatch.setattr(
+        online, "open_video_stream",
+        lambda entry, byte_range: seen.append(byte_range) or Upstream()
+    )
+    client = TestClient(main.app)
+    r = client.get("/media/online/" + entry["id"], headers={"Range": "bytes=0-3"})
+    assert r.status_code == 206, r.text
+    assert r.content == b"test"
+    assert r.headers["content-type"].startswith("video/mp4")
+    assert r.headers["content-range"] == "bytes 0-3/100"
+    assert r.headers["cache-control"] == "no-store"
+    assert seen == ["bytes=0-3"]
+
+
+def test_old_quicktime_cache_is_invalidated(monkeypatch, tmp_path):
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
+    ident = "a" * 24
+    path = tmp_path / (ident + ".mp4")
+    path.write_bytes(b"\x00\x00\x00\x18ftypqt  " + b"X" * 1500)
+    assert online.cached_file(ident) is None
+    assert not path.exists()
+
+
+def test_apple_mov_cache_remux_uses_stream_copy(monkeypatch, tmp_path):
+    import io
+    from types import SimpleNamespace
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_cache_enabled": True, "online_cache_gb": 12
+    })
+    disk = SimpleNamespace(free=100 * 1024 ** 3, total=128 * 1024 ** 3)
+    monkeypatch.setattr(online.shutil, "disk_usage", lambda folder: disk)
+    monkeypatch.setattr(online.shutil, "which", lambda command: "/usr/bin/ffmpeg")
+    class FakeResponse(io.BytesIO):
+        def __init__(self):
+            super().__init__(b"\x00\x00\x00\x18ftypqt  " + b"z" * 2500)
+            self.headers = {"Content-Length": "2512"}
+    class FakeOpener:
+        def open(self, request, timeout):
+            return FakeResponse()
+    monkeypatch.setattr(online.urllib.request, "build_opener",
+                        lambda *args: FakeOpener())
+    recorded = []
+
+    def fake_ffmpeg(args, **kwargs):
+        recorded.append(args)
+        from pathlib import Path
+        Path(args[-1]).write_bytes(b"\x00\x00\x00\x18ftypisom" + b"M" * 2500)
+
+    monkeypatch.setattr(online.subprocess, "run", fake_ffmpeg)
+    clip = online._clip(
+        "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
+        "Ocean", "Apple", "https://www.apple.com/"
+    )
+    assert online.DOWNLOAD_SLOT.acquire(blocking=False)
+    online._cache_worker(clip)
+    path = tmp_path / (clip["id"] + ".mp4")
+    assert path.is_file()
+    assert path.read_bytes()[8:12] == b"isom"
+    assert recorded and "-c:v" in recorded[0] and "copy" in recorded[0]

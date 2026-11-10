@@ -9,9 +9,11 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import ssl
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -86,6 +88,28 @@ def _tls_context() -> ssl.SSLContext:
     return context
 
 
+def open_video_stream(entry: dict, byte_range: str | None = None):
+    """Open only catalog-controlled media hosts with verified TLS and bounded timeouts.
+
+    MOV/H.264 from Apple needs a browser-friendly video/mp4 MIME type. The
+    caller proxies HTTP Range responses without decoding or transcoding data.
+    """
+    provider = entry["provider"]
+    url = entry["remote_url"]
+    if not allowed_video_url(url, provider):
+        raise ValueError("Unsafe video URL")
+    headers = {"User-Agent": "PiAerial/0.3", "Accept": "*/*"}
+    if byte_range is not None:
+        import re
+        if not re.fullmatch(r"bytes=(?:\d+-\d*|-\d+)", byte_range) or len(byte_range) > 80:
+            raise ValueError("Invalid Range")
+        headers["Range"] = byte_range
+    opener = urllib.request.build_opener(
+        SafeRedirect(provider), urllib.request.HTTPSHandler(context=_tls_context())
+    )
+    return opener.open(urllib.request.Request(url, headers=headers), timeout=16)
+
+
 def _http_json(url: str, *, headers=None, timeout=9) -> dict | list:
     req = urllib.request.Request(url, headers={"User-Agent": "PiAerial/0.3 (local TV)",
                                                 "Accept": "application/json", **(headers or {})})
@@ -151,7 +175,8 @@ def _apple() -> list[dict]:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            for key in ("url-1080-H264", "url-1080-h264", "url-1080-SDR", "url"):
+            # Chromium on Raspberry Pi should never receive HEVC/HDR from this catalog.
+            for key in ("url-1080-H264", "url-1080-h264"):
                 url = item.get(key)
                 if isinstance(url, str) and allowed_video_url(url, "apple"):
                     selected = url
@@ -168,36 +193,76 @@ def _apple() -> list[dict]:
     return result[:180]
 
 
+def _nasa_manifest(entry: dict) -> tuple[dict | None, str]:
+    """Resolve an actual movie URL: the search endpoint only contains previews."""
+    info = (entry.get("data") or [{}])[0]
+    sid = str(info.get("nasa_id") or "")
+    if not sid or len(sid) > 180 or "/" in sid:
+        return None, "bad_id"
+    try:
+        manifest = _http_json("https://images-api.nasa.gov/asset/" +
+                              urllib.parse.quote(sid, safe=""), timeout=8)
+    except Exception as exc:
+        print(f"[online] nasa asset {sid[:50]}: {exc}", flush=True)
+        return None, "manifest_error"
+    files = [r.get("href") for r in manifest.get("collection", {}).get("items", [])
+             if isinstance(r, dict) and isinstance(r.get("href"), str)]
+    movies = [
+        url for url in files
+        if urllib.parse.urlsplit(url).path.lower().endswith((".mp4", ".m4v", ".mov"))
+        and allowed_video_url(url, "nasa")
+    ]
+    # Prefer browser-friendly MP4, then medium/small renditions to avoid 4K.
+    movies.sort(key=lambda url: (
+        not urllib.parse.urlsplit(url).path.lower().endswith((".mp4", ".m4v")),
+        not any(t in url.lower() for t in ("~medium", "~small", "_medium", "_small")),
+        "~orig" in url.lower(),
+        len(url),
+    ))
+    if not movies:
+        return None, "no_movie"
+    clip = _clip("nasa", sid, movies[0], str(info.get("title") or "NASA Earth"),
+                 "NASA Image and Video Library", "https://images.nasa.gov/details/" +
+                 urllib.parse.quote(sid, safe=""))
+    return clip, "ok" if clip else "untrusted"
+
+
 def _nasa() -> list[dict]:
-    query = urllib.parse.urlencode({"q": "Earth from space", "media_type": "video", "page_size": 28})
-    search = _http_json(SOURCE_URLS["nasa"] + "?" + query)
-    items = search.get("collection", {}).get("items", [])
-    output = []
-    for entry in items[:16]:
-        info = (entry.get("data") or [{}])[0]
-        sid = str(info.get("nasa_id") or "")
-        if not sid or "/" in sid:
-            continue
-        # Video assets are discovered from NASA's own media manifest.
-        try:
-            manifest = _http_json("https://images-api.nasa.gov/asset/" +
-                                  urllib.parse.quote(sid, safe=""), timeout=6)
-        except Exception:
-            continue
-        videos = [r.get("href") for r in manifest.get("collection", {}).get("items", [])
-                  if isinstance(r, dict) and isinstance(r.get("href"), str)
-                  and urllib.parse.urlsplit(r["href"]).path.lower().endswith(".mp4")]
-        videos = [url for url in videos if allowed_video_url(url, "nasa")]
-        if not videos:
-            continue
-        # Prefer the lower-bandwidth rendition where NASA supplies several.
-        url = next((u for u in videos if "~small" in u.lower() or "~medium" in u.lower()), videos[0])
-        title = str(info.get("title") or "NASA Earth")
-        clip = _clip("nasa", sid, url, title, "NASA Image and Video Library",
-                     "https://images.nasa.gov/")
-        if clip:
-            output.append(clip)
-    return output
+    # A phrase-only query was too restrictive and produced empty catalogs.
+    # Search across several themes and resolve videos from their asset manifests.
+    result: list[dict] = []
+    seen: set[str] = set()
+    counts: dict[str, int] = {}
+    for term in ("earth", "international space station", "earth timelapse"):
+        query = urllib.parse.urlencode({"q": term, "media_type": "video",
+                                        "page_size": 36})
+        response = _http_json(SOURCE_URLS["nasa"] + "?" + query, timeout=12)
+        entries = response.get("collection", {}).get("items", [])
+        candidates = []
+        for entry in entries[:24]:
+            if not isinstance(entry, dict):
+                continue
+            info = (entry.get("data") or [{}])[0]
+            sid = str(info.get("nasa_id") or "")
+            if sid and sid not in seen:
+                seen.add(sid)
+                candidates.append(entry)
+        # Parallel manifests avoid a long delay when one NASA asset times out.
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(_nasa_manifest, e) for e in candidates]
+            for future in as_completed(futures):
+                clip, status = future.result()
+                counts[status] = counts.get(status, 0) + 1
+                if clip:
+                    result.append(clip)
+        if len(result) >= 15:
+            break
+    if not result:
+        raise ValueError("NASA: не нашлось видеофайлов после проверки манифестов; " +
+                         ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    print(f"[online] nasa: {len(result)} videos; " +
+          ", ".join(f"{k}={v}" for k, v in sorted(counts.items())), flush=True)
+    return result[:40]
 
 
 def _pixabay() -> list[dict]:
@@ -326,6 +391,13 @@ def lookup(clip_id: str) -> dict | None:
 def cached_file(clip_id: str) -> Path | None:
     path = CACHE_FOLDER / (clip_id + ".mp4")
     if path.is_file() and not path.is_symlink():
+        # Old releases incorrectly stored QuickTime MOV bytes as .mp4.
+        # Invalidate them so the new worker can remux into actual MP4.
+        with path.open("rb") as stream:
+            header = stream.read(12)
+        if header[8:12] == b"qt  ":
+            path.unlink(missing_ok=True)
+            return None
         path.touch()
         return path
     return None
@@ -356,9 +428,13 @@ def _cache_worker(entry: dict) -> None:
         if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + 100 * 1024**2:
             return
         temp = CACHE_FOLDER / (ident + ".part")
+        muxed = CACHE_FOLDER / (ident + ".mux.mp4")
         final = CACHE_FOLDER / (ident + ".mp4")
         if final.exists():
             return
+        # Remove incomplete files left by a crashed older download.
+        temp.unlink(missing_ok=True)
+        muxed.unlink(missing_ok=True)
         provider = entry["provider"]
         opener = urllib.request.build_opener(SafeRedirect(provider),
                                               urllib.request.HTTPSHandler(context=_tls_context()))
@@ -383,11 +459,32 @@ def _cache_worker(entry: dict) -> None:
             with temp.open("rb") as f:
                 header = f.read(12)
             if header[4:8] != b"ftyp":
-                raise ValueError("Ответ сервера не MP4")
-            os.replace(temp, final)
+                raise ValueError("Ответ сервера не содержит MP4/MOV")
+            is_mov = urllib.parse.urlsplit(entry["remote_url"]).path.lower().endswith(".mov")
+            if is_mov:
+                ffmpeg = shutil.which("ffmpeg")
+                if not ffmpeg:
+                    raise ValueError("Для кеширования MOV нужен ffmpeg; онлайн-поток доступен")
+                if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:
+                    raise ValueError("Не хватает места на безопасный ремультиплекс MOV")
+                # Copy the H.264 track into a fast-start MP4 container. No
+                # re-encoding or extra CPU-heavy transcoding on Raspberry Pi.
+                subprocess.run(
+                    [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                     "-i", str(temp), "-map", "0:v:0", "-an", "-c:v", "copy",
+                     "-movflags", "+faststart", str(muxed)],
+                    check=True, timeout=120, capture_output=True,
+                )
+                with muxed.open("rb") as remuxed:
+                    if remuxed.read(12)[4:8] != b"ftyp":
+                        raise ValueError("Ошибка при преобразовании MOV в MP4")
+                os.replace(muxed, final)
+            else:
+                os.replace(temp, final)
             _prune(max_bytes, ident)
         finally:
             temp.unlink(missing_ok=True)
+            muxed.unlink(missing_ok=True)
     except Exception as exc:
         print(f"[online] cannot cache {ident}: {exc}", flush=True)
     finally:
