@@ -579,7 +579,9 @@ def cache_status() -> dict:
     }
 
 
-def _cache_worker(entry: dict) -> None:
+def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None) -> None:
+    # Keep the acquired semaphore even if the module global is replaced.
+    slot = slot if slot is not None else DOWNLOAD_SLOT
     ident = entry["id"]
     try:
         cfg = settings()
@@ -658,7 +660,7 @@ def _cache_worker(entry: dict) -> None:
     finally:
         with LOCK:
             ACTIVE.discard(ident)
-        DOWNLOAD_SLOT.release()
+        slot.release()
 
 
 def try_cache(entry: dict) -> None:
@@ -673,10 +675,11 @@ def try_cache(entry: dict) -> None:
                 or ident in _processed_ids()
                 or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
             return
-        if not DOWNLOAD_SLOT.acquire(blocking=False):
+        slot = DOWNLOAD_SLOT
+        if not slot.acquire(blocking=False):
             return
         ACTIVE.add(ident)
-    threading.Thread(target=_cache_worker, args=(dict(entry),), daemon=True).start()
+    threading.Thread(target=_cache_worker, args=(dict(entry), slot), daemon=True).start()
 
 
 def warm_cache() -> None:

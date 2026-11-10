@@ -9,6 +9,7 @@ import shutil
 import threading
 import time
 import urllib.error
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from zoneinfo import available_timezones
@@ -26,6 +27,8 @@ from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, 
 init_data()
 STOP = threading.Event()
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+LOGIN_ATTEMPTS_LOCK = threading.Lock()
+LOGIN_ATTEMPTS_MAX_IPS = 1000
 VIDEO_EXTENSIONS = {'.mp4', '.webm', '.m4v', '.mov', '.mkv'}
 DISPLAY_REQUEST_WINDOW = 30
 DISPLAY_MEDIA_WINDOW = 24 * 60 * 60
@@ -311,18 +314,32 @@ class Login(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+def _prune_login_attempts(now: float) -> None:
+    """Discard expired IP attempts. Caller holds LOGIN_ATTEMPTS_LOCK."""
+    for address, attempts in list(LOGIN_ATTEMPTS.items()):
+        recent = [t for t in attempts if now - t < 300]
+        if recent:
+            LOGIN_ATTEMPTS[address] = recent
+        else:
+            del LOGIN_ATTEMPTS[address]
+
+
 @app.post('/api/auth/login')
 def login(form: Login, request: Request):
     ip = request.client.host if request.client else 'unknown'
     now = time.monotonic()
-    recent = [t for t in LOGIN_ATTEMPTS.get(ip, []) if now - t < 300]
-    if len(recent) >= 5:
-        raise HTTPException(429, 'Слишком много попыток. Повторите через пять минут.')
-    if not auth.check_password(form.password):
-        recent.append(now)
-        LOGIN_ATTEMPTS[ip] = recent
-        raise HTTPException(401, 'Неверный пароль')
-    LOGIN_ATTEMPTS.pop(ip, None)
+    with LOGIN_ATTEMPTS_LOCK:
+        _prune_login_attempts(now)
+        recent = LOGIN_ATTEMPTS.get(ip, [])
+        if len(recent) >= 5:
+            raise HTTPException(429, 'Слишком много попыток. Повторите через пять минут.')
+        if not auth.check_password(form.password):
+            if ip not in LOGIN_ATTEMPTS and len(LOGIN_ATTEMPTS) >= LOGIN_ATTEMPTS_MAX_IPS:
+                oldest = min(LOGIN_ATTEMPTS, key=lambda addr: LOGIN_ATTEMPTS[addr][-1])
+                del LOGIN_ATTEMPTS[oldest]
+            LOGIN_ATTEMPTS[ip] = [*recent, now]
+            raise HTTPException(401, 'Неверный пароль')
+        LOGIN_ATTEMPTS.pop(ip, None)
     token = auth.token_for()
     response = JSONResponse({'ok': True, 'csrf': auth.csrf_for(token)})
     response.set_cookie('pa_session', token, max_age=auth.DURATION, httponly=True,
@@ -443,18 +460,19 @@ async def add_video(file: UploadFile = File(...), _: None = Depends(auth.require
     suffix = Path(original).suffix.lower()
     if suffix not in VIDEO_EXTENSIONS:
         raise HTTPException(422, 'Поддерживаются MP4, WebM, M4V, MOV и MKV')
+    # Reject obviously invalid files before enforcing the free-space reserve.
+    header = await file.read(12)
+    await file.seek(0)
+    if suffix in ('.mp4', '.m4v', '.mov') and header[4:8] != b'ftyp':
+        raise HTTPException(422, 'Это не MP4/M4V/MOV-файл')
+    if suffix in ('.webm', '.mkv') and not header.startswith(b'\x1a\x45\xdf\xa3'):
+        raise HTTPException(422, 'Это не WebM/MKV-файл')
     free = shutil.disk_usage(DATA).free
     if free < 9 * 1024**3:
         raise HTTPException(507, 'Нужно 9 ГБ свободного места для загрузки и обработки')
     maximum = min(10 * 1024**3, max(0, free - 9 * 1024**3))
     try:
         incoming = await save_upload(file, maximum, suffix)
-        with incoming.open('rb') as handle:
-            header = handle.read(12)
-        if suffix in ('.mp4', '.m4v', '.mov') and header[4:8] != b'ftyp':
-            raise ValueError('Это не MP4/M4V/MOV-файл')
-        if suffix in ('.webm', '.mkv') and not header.startswith(b'\x1a\x45\xdf\xa3'):
-            raise ValueError('Это не WebM/MKV-файл')
         safe_name = re.sub(r'[^0-9A-Za-zА-Яа-яЁё._-]+', '_', original)[:100].strip('._-')
         if not safe_name or not safe_name.lower().endswith(suffix):
             safe_name = 'video' + suffix
@@ -499,7 +517,7 @@ async def install_module(file: UploadFile = File(...), _: None = Depends(auth.re
         incoming = await save_upload(file, bundles.MAX_BUNDLE_BYTES, '.zip')
         manifest = await asyncio.to_thread(bundles.install_module, incoming)
         return {'ok': True, 'module': manifest}
-    except (ValueError, OSError, __import__('zipfile').BadZipFile) as exc:
+    except (ValueError, OSError, zipfile.BadZipFile) as exc:
         raise HTTPException(422, str(exc)) from exc
     finally:
         if 'incoming' in locals():
@@ -522,7 +540,7 @@ async def install_core(file: UploadFile = File(...), _: None = Depends(auth.requ
         incoming = await save_upload(file, bundles.MAX_BUNDLE_BYTES, '.zip')
         manifest = await asyncio.to_thread(bundles.stage_core, incoming)
         return {'ok': True, 'version': manifest['version'], 'message': 'Обновление поставлено в очередь с откатом'}
-    except (ValueError, OSError, __import__('zipfile').BadZipFile) as exc:
+    except (ValueError, OSError, zipfile.BadZipFile) as exc:
         raise HTTPException(422, str(exc)) from exc
     finally:
         if 'incoming' in locals():

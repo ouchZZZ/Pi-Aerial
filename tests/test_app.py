@@ -6,6 +6,11 @@ import os
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
 
 # Isolate all test storage from any real Pi Aerial installation.
 TEST_BASE = Path(tempfile.mkdtemp(prefix='pi-aerial-test-'))
@@ -117,6 +122,9 @@ def test_signed_modules_and_rollback(monkeypatch):
 
 def test_safe_upload_and_core_queue(monkeypatch):
     monkeypatch.setattr(weather, 'refresh_weather', lambda: {})
+    # File validation must not depend on the host's available space.
+    monkeypatch.setattr(main.shutil, 'disk_usage',
+                        lambda _: SimpleNamespace(free=100 * 1024**3, total=200 * 1024**3, used=100 * 1024**3))
     key = setup_key()
     monkeypatch.setattr(main.local_videos, 'polling_loop', lambda stop: stop.wait(30))
     with TestClient(main.app) as client:
@@ -139,6 +147,43 @@ def test_safe_upload_and_core_queue(monkeypatch):
         assert (DATA / 'pending_update.json').exists()
         assert (TEST_BASE / 'releases' / '0.2.0' / 'app' / 'main.py').exists()
         (DATA / 'pending_update.json').unlink()
+
+
+def test_invalid_video_header_wins_over_low_disk_space(monkeypatch):
+    monkeypatch.setattr(main.shutil, 'disk_usage',
+                        lambda _: SimpleNamespace(free=7 * 1024**3, total=8 * 1024**3, used=1 * 1024**3))
+    with TestClient(main.app) as client:
+        headers = login_client(client)
+        invalid = client.post('/api/admin/videos',
+                              files={'file': ('bad.mp4', b'NOT_A_VIDEO', 'video/mp4')}, headers=headers)
+        assert invalid.status_code == 422
+        valid_header = b'\x00\x00\x00\x18ftypisom' + b'0' * 100
+        no_space = client.post('/api/admin/videos',
+                               files={'file': ('valid.mp4', valid_header, 'video/mp4')}, headers=headers)
+        assert no_space.status_code == 507
+
+
+def test_failed_login_limits_ip_history_and_prunes_expired(monkeypatch):
+    now = main.time.monotonic()
+    monkeypatch.setattr(main, 'LOGIN_ATTEMPTS_MAX_IPS', 2)
+    with main.LOGIN_ATTEMPTS_LOCK:
+        main.LOGIN_ATTEMPTS.clear()
+        main.LOGIN_ATTEMPTS.update({
+            'expired': [now - 301],
+            'oldest': [now - 200],
+            'newer': [now - 100],
+        })
+    request = Request({'type': 'http', 'client': ('new-ip', 42),
+                       'scheme': 'http', 'server': ('localhost', 80),
+                       'path': '/api/auth/login', 'headers': []})
+    try:
+        with pytest.raises(HTTPException) as exc:
+            main.login(main.Login(password='incorrect-password'), request)
+        assert exc.value.status_code == 401
+        assert set(main.LOGIN_ATTEMPTS) == {'newer', 'new-ip'}
+    finally:
+        with main.LOGIN_ATTEMPTS_LOCK:
+            main.LOGIN_ATTEMPTS.clear()
 
 
 def test_local_source_toggle_preserves_uploaded_files(monkeypatch):
