@@ -6,9 +6,11 @@ At the configured cache limit the worker pauses without evicting ready videos.
 from __future__ import annotations
 
 import hashlib
+import html
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import ssl
@@ -181,13 +183,24 @@ def source_status() -> list[dict]:
     return out
 
 
+def _description(*candidates: object) -> str:
+    """Keep descriptions from sources as plain text, not fabricated summaries."""
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            text = " ".join(html.unescape(re.sub(r"<[^>]*>", " ", value)).split())
+            if text:
+                return text[:1200]
+    return ""
+
+
 def _clip(provider: str, source_id: str, url: str, title: str,
-          credit: str, page: str) -> dict | None:
+          credit: str, page: str, description: str = "") -> dict | None:
     if not allowed_video_url(url, provider):
         return None
     ident = hashlib.sha256((provider + ":" + source_id).encode()).hexdigest()[:24]
     return {"id": ident, "name": title[:110], "provider": provider,
             "remote_url": url, "credit": credit[:150],
+            "description": _description(description),
             "page": page if page.startswith("https://") else ""}
 
 
@@ -261,8 +274,13 @@ def _apple() -> list[dict]:
         seen.add(source_id)
         title = str(e.get("name") or e.get("accessibilityLabel")
                     or e.get("id") or "Apple Aerial")
+        description = _description(
+            e.get("description"), e.get("localizedDescription"),
+            *(item.get("description") for item in items if isinstance(item, dict)))
+        if description.casefold() == title.casefold():
+            description = ""
         clip = _clip("apple", source_id, selected, title,
-                     "Apple Aerial", "https://www.apple.com/tv/")
+                     "Apple Aerial", "https://www.apple.com/tv/", description)
         if clip:
             result.append(clip)
     return result[:250]
@@ -300,7 +318,8 @@ def _nasa_manifest(entry: dict) -> tuple[dict | None, str]:
         return None, "no_movie"
     clip = _clip("nasa", sid, movies[0], str(info.get("title") or "NASA Earth"),
                  "NASA Image and Video Library", "https://images.nasa.gov/details/" +
-                 urllib.parse.quote(sid, safe=""))
+                 urllib.parse.quote(sid, safe=""),
+                 _description(info.get("description"), info.get("description_508")))
     return clip, "ok" if clip else "untrusted"
 
 
@@ -409,7 +428,9 @@ def list_clips() -> list[dict]:
             result.append({"id": item_id, "name": item["name"],
                            "url": "/media/online/" + item_id,
                            "provider": provider, "credit": item.get("credit", ""),
-                           "page": item.get("page", ""), "cached": cached})
+                           "page": item.get("page", ""),
+                           "description": item.get("description", ""),
+                           "cached": cached})
     return result
 
 
@@ -467,7 +488,9 @@ def _processed_ids() -> set[str]:
                 except OSError:
                     continue
         if done != set(saved):
-            atomic_json(PROCESSED_FILE, {"ids": sorted(done)})
+            current = read_json(PROCESSED_FILE)
+            current["ids"] = sorted(done)
+            atomic_json(PROCESSED_FILE, current)
         return done
 
 
@@ -582,6 +605,8 @@ def _cache_worker(entry: dict) -> None:
             os.replace(muxed, final)
             (CACHE_FOLDER / (ident + ".ready")).write_text(CACHE_PROFILE, encoding="utf8")
             _mark_processed(ident)
+            from . import online_library
+            online_library.remember(ident, entry)
             print(f"[online] ready {provider}: {ident} "
                   f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
             video_progress.finish("online", ident, True)

@@ -5,3 +5,18 @@
 .video-progress-item strong{display:block;color:#1e3a4b;font-size:14px;overflow-wrap:anywhere}
 .video-progress-item small{display:block;color:#667b89;font-size:12px;line-height:1.6;margin:6px 0}
 .video-progress-item progress{display:block;width:100%;height:13px;accent-color:#188e9c;border-radius:8px}
+
+/* Prepared video library and intentionally explicit destructive controls. */
+.tabs{flex-wrap:wrap}
+.library-heading,.library-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.library-heading h3{margin-bottom:0}
+.library-heading button,.library-dialog-header button{border:1px solid #cbd9df;background:#fff;color:#23566b;border-radius:9px;padding:9px 14px;font-weight:650}
+.library-description{max-width:700px;margin:9px 0 0;font-size:13px;line-height:1.55;color:#516676;white-space:normal;overflow-wrap:anywhere}
+.library-actions{flex-wrap:wrap;justify-content:flex-end}
+.library-actions small{color:#8293a0;max-width:200px;line-height:1.4}
+.library-dialog{border:1px solid #cad9e0;max-width:min(900px,94vw);width:100%;padding:18px;border-radius:16px;background:#fff;color:#1d3040;box-shadow:0 20px 90px #03182150}
+.library-dialog::backdrop{background:#061927c9}
+.library-dialog-header{margin-bottom:16px}
+.library-dialog-header strong{overflow-wrap:anywhere}
+.library-dialog video{display:block;width:100%;max-height:74vh;background:#03080e;border-radius:10px}
+@media(max-width:750px){.library-heading{align-items:flex-start;flex-direction:column}.library-actions{justify-content:flex-start}.line{flex-wrap:wrap}}

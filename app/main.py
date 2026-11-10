@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, bundles, weather, github_updates, online, local_videos, video_progress
+from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress
 from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, atomic_json, init_data,
                       read_json, safe_id, settings, update_settings)
 
@@ -198,6 +198,45 @@ def online_status(_: None = Depends(auth.require_admin)):
 @app.post('/api/admin/online/cache/clear')
 def online_clear_cache(_: None = Depends(auth.require_admin)):
     return {'ok': True, 'deleted': online.clear_cache()}
+
+
+@app.get('/api/admin/online/library')
+def online_library_list(_: None = Depends(auth.require_admin)):
+    return {'videos': online_library.list_videos()}
+
+
+@app.get('/api/admin/online/library/{clip_id}/preview')
+def online_library_preview(clip_id: str, _: None = Depends(auth.require_admin)):
+    path = online_library.ready_path(clip_id)
+    if path is None:
+        raise HTTPException(404, 'Подготовленный ролик не найден')
+    return FileResponse(path, media_type='video/mp4',
+                        headers={'Cache-Control': 'private, no-store'})
+
+
+@app.delete('/api/admin/online/library/{clip_id}')
+def online_library_delete(clip_id: str, _: None = Depends(auth.require_admin)):
+    try:
+        deleted = online_library.delete_video(clip_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not deleted:
+        raise HTTPException(404, 'Подготовленный ролик не найден')
+    return {'ok': True}
+
+
+@app.post('/api/admin/online/library/{clip_id}/redownload')
+def online_library_redownload(clip_id: str, _: None = Depends(auth.require_admin)):
+    try:
+        updated = online_library.allow_redownload(clip_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not updated:
+        raise HTTPException(404, 'Блокировка повторной загрузки не найдена')
+    # Normal serial queue resumes on the next scheduler cycle; only one job
+    # can start, and only if current cache/disk limits still allow it.
+    online.warm_cache()
+    return {'ok': True}
 
 
 @app.post('/api/admin/online/refresh')
