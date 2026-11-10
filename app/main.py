@@ -141,6 +141,7 @@ def online_video(clip_id: str, request: Request):
         raise HTTPException(404, 'Онлайн-ролик недоступен или источник выключен')
     path = online.cached_file(clip_id)
     if path:
+        path.touch()  # actual playback is the cache LRU access, not the status poll
         return FileResponse(path, media_type='video/mp4',
                             headers={'Cache-Control': 'private, max-age=3600'})
     if entry['provider'] == 'apple':
