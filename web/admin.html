@@ -28,6 +28,25 @@
     </select></label>
     <label for="layoutScale">Размер <output id="layoutScaleValue">100%</output><input id="layoutScale" type="range" min="40" max="250" step="5" value="100"></label>
   </div>
+  <div class="layout-font-controls">
+    <label for="layoutFont">Шрифт
+      <select id="layoutFont">
+        <option value="default">Системный (по умолчанию)</option>
+        <option value="arial">Arial</option>
+        <option value="verdana">Verdana</option>
+        <option value="trebuchet">Trebuchet MS</option>
+        <option value="georgia">Georgia</option>
+        <option value="times">Times New Roman</option>
+        <option value="courier">Courier New</option>
+      </select>
+    </label>
+    <label for="layoutTextColor">Цвет текста
+      <input id="layoutTextColor" type="color" value="#ffffff">
+    </label>
+    <span id="layoutColorValue" class="layout-color-value">По умолчанию</span>
+    <button id="layoutColorReset" type="button">Сбросить цвет</button>
+  </div>
+  <p class="hint layout-style-hint">Шрифт и цвет задаются отдельно для каждого блока и положения. Изменения сразу видны в предпросмотре.</p>
   <div class="layout-grid-controls">
     <label class="layout-grid-toggle"><input id="layoutSnapGrid" type="checkbox" checked> Сетка и привязка к ней</label>
     <span class="hint">Шаг сетки: 40 px на макете 1280 × 720. Отключите для свободного перемещения.</span>
