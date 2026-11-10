@@ -62,3 +62,37 @@ def test_github_catalog_installs_valid_module(monkeypatch, tmp_path):
         assert False, 'unsafe source unexpectedly accepted'
     except ValueError:
         pass
+
+
+def test_public_https_configuration_without_deploy_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(github_updates, 'DATA', tmp_path)
+    (tmp_path / 'github.json').write_text(json.dumps({
+        'enabled': True, 'remote': github_updates.PUBLIC_REMOTE
+    }))
+    assert github_updates._config() == (github_updates.PUBLIC_REMOTE, None)
+    monkeypatch.setenv('GIT_SSH_COMMAND', 'ssh -i /tmp/injected')
+    env = github_updates._git_env(None)
+    assert 'GIT_SSH_COMMAND' not in env
+    assert env['GIT_TERMINAL_PROMPT'] == '0'
+
+
+def test_legacy_ssh_configuration(monkeypatch, tmp_path):
+    monkeypatch.setattr(github_updates, 'DATA', tmp_path)
+    key = tmp_path / 'my deploy key'
+    key.write_text('example')
+    (tmp_path / 'github.json').write_text(json.dumps({
+        'enabled': True, 'remote': github_updates.LEGACY_SSH_REMOTE,
+        'ssh_key': str(key)
+    }))
+    assert github_updates._config() == (github_updates.LEGACY_SSH_REMOTE, key)
+    assert "'my deploy key'" in github_updates._git_env(key)['GIT_SSH_COMMAND']
+
+
+def test_reject_untrusted_remotes(monkeypatch, tmp_path):
+    import pytest
+    monkeypatch.setattr(github_updates, 'DATA', tmp_path)
+    (tmp_path / 'github.json').write_text(json.dumps({
+        'enabled': True, 'remote': 'https://not-our-repo.example/test.git'
+    }))
+    with pytest.raises(ValueError, match='Некорректный'):
+        github_updates._config()
