@@ -1,5 +1,4 @@
 """Durable local upload pipeline, legacy migration and failure recovery."""
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -62,7 +61,7 @@ def test_failed_conversion_keeps_original_for_retry(monkeypatch, isolated_queue)
     assert "Неизвестный кодек" in local_videos.status()[0]["error"]
     source = next(local_videos.INBOX.iterdir())
     assert source.read_bytes() == b"original"
-    assert not local_videos.READY.glob("*.mp4").__next__ if False else True
+    assert list(local_videos.READY.glob("*.mp4")) == []
     assert local_videos.retry(job["id"])
     monkeypatch.setattr(local_videos, "normalize_video", _fake_normalize)
     assert local_videos.process_one()
