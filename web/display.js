@@ -111,6 +111,8 @@ function showForecast(weather, settings){
 function showWeather(){
   if(!state)return;
   const w=state.weather,c=state.settings;
+  setText('weatherCredit',displayText('Погода: Open-Meteo','Weather: Open-Meteo'));
+  $('forecast').setAttribute?.('aria-label',displayText('Прогноз на неделю','Weekly forecast'));
   setHidden('clock',!c.show_clock);
   setHidden('calendarCard',!c.show_date);
   setHidden('clockCard',!c.show_clock&&!c.show_weather);
