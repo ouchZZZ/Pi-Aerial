@@ -254,7 +254,7 @@ test('both OSD blocks alternate sides when a video starts playing', async () => 
   }
 });
 
-test('custom OSD layout positions each block independently and disables rotation', async () => {
+test('single-position OSD layout remains fixed when videos change', async () => {
   const h = await ready();
   const layout = {
     clock: {x: 12, y: 8, scale: 1.2},
@@ -262,6 +262,7 @@ test('custom OSD layout positions each block independently and disables rotation
     calendar: {x: 70, y: 7, scale: 1},
     footer: {x: 9, y: 92, scale: 0.7},
   };
+  h.publicState.settings.osd_layout_mode = 'single';
   h.publicState.settings.osd_layout = layout;
   await h.context.poll();
   assert.ok(h.bodyClasses.has('custom-osd-layout'));
@@ -282,6 +283,53 @@ test('custom OSD layout positions each block independently and disables rotation
   await h.context.poll();
   assert.ok(!h.bodyClasses.has('custom-osd-layout'));
   assert.equal(h.elements.get('weatherCard').style.left, '');
+});
+
+test('alternating custom OSD layouts cycle on every successful video start', async () => {
+  const h=await ready();
+  const first={
+    clock:{x:8,y:10,scale:1},weather:{x:5,y:37,scale:1},
+    calendar:{x:72,y:10,scale:1},footer:{x:5,y:90,scale:1},
+  };
+  const second={
+    clock:{x:58,y:8,scale:.75},weather:{x:52,y:45,scale:1.25},
+    calendar:{x:5,y:14,scale:1.1},footer:{x:35,y:93,scale:.8},
+  };
+  h.publicState.settings.osd_layout_mode='alternate';
+  h.publicState.settings.osd_layout=first;
+  h.publicState.settings.osd_layout_alt=second;
+  h.publicState.videos=[
+    {id:'one',url:'/media/one.mp4'},
+    {id:'two',url:'/media/two.mp4'},
+    {id:'three',url:'/media/three.mp4'},
+  ];
+  await h.context.poll();
+  assert.equal(h.elements.get('clockCard').style.left,'8%');
+  for(const [index,expected] of [first,second,first].entries()){
+    h.video.pending[index].resolve();
+    await settle();
+    assert.equal(h.elements.get('clockCard').style.left,expected.clock.x+'%');
+    assert.equal(h.elements.get('weatherCard').style.top,expected.weather.y+'%');
+    assert.equal(h.elements.get('calendarCard').style.transform,'scale('+expected.calendar.scale+')');
+    await h.context.poll();
+    assert.equal(h.elements.get('clockCard').style.left,expected.clock.x+'%');
+    if(index<2)h.video.dispatch('ended');
+  }
+});
+
+test('single-position mode uses the default first position without rotating', async () => {
+  const h=await ready();
+  h.publicState.settings.osd_layout_mode='single';
+  h.publicState.videos=[{url:'/media/a'},{url:'/media/b'}];
+  await h.context.poll();
+  h.video.pending[0].resolve();
+  await settle();
+  assert.equal(h.elements.get('clockCard').className,'clock-card');
+  h.video.dispatch('ended');
+  h.video.pending[1].resolve();
+  await settle();
+  assert.equal(h.elements.get('clockCard').className,'clock-card');
+  assert.equal(h.elements.get('calendarCard').className,'calendar-card osd-right');
 });
 
 test('calendar shows leading dates, holidays and transferred days off', async () => {
