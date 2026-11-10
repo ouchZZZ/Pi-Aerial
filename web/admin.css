@@ -63,3 +63,14 @@
 
 #layoutPositionField[hidden]{display:none}
 .layout-controls select{min-width:180px}
+
+/* Per-widget typography controls in the OSD editor. */
+.layout-font-controls{display:flex;align-items:end;flex-wrap:wrap;gap:14px;margin:4px 0}
+.layout-font-controls label{display:flex;flex-direction:column;align-items:flex-start;gap:7px;margin:0;min-width:140px}
+.layout-font-controls label:first-child{min-width:220px}
+.layout-font-controls select{min-width:210px;margin:0!important}
+.layout-font-controls input[type=color]{display:block;width:74px;height:42px;min-height:42px;border:1px solid #cbd9df;border-radius:9px;background:#fff;cursor:pointer;padding:3px}
+.layout-font-controls button{border:1px solid #cbd9df;background:#fff;color:#23566b;border-radius:9px;padding:10px 12px;font-weight:650}
+.layout-color-value{color:#718492;font-size:12px;align-self:center}
+.layout-style-hint{margin:0 0 15px}
+@media(max-width:750px){.layout-font-controls label:first-child,.layout-font-controls select{min-width:180px}}
