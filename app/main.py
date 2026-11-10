@@ -26,6 +26,9 @@ init_data()
 STOP = threading.Event()
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 VIDEO_EXTENSIONS = {'.mp4', '.webm', '.m4v', '.mov', '.mkv'}
+DISPLAY_REQUEST_WINDOW = 30
+DISPLAY_MEDIA_WINDOW = 24 * 60 * 60
+DISPLAY_REQUESTS: dict[str, tuple[float, str, str]] = {}
 
 
 @asynccontextmanager
@@ -111,13 +114,58 @@ def public():
 
 @app.get('/media/{filename}')
 def video_file(filename: str):
+    return FileResponse(ready_local_video(filename), media_type='video/mp4',
+                        headers={'Cache-Control': 'public, max-age=86400'})
+
+
+def ready_local_video(filename: str) -> Path:
     if Path(filename).name != filename or Path(filename).suffix.lower() not in VIDEO_EXTENSIONS:
         raise HTTPException(404)
     path = DATA / 'videos' / filename
     if not local_videos.is_ready(path):
         raise HTTPException(404)
-    return FileResponse(path, media_type='video/mp4',
-                        headers={'Cache-Control': 'public, max-age=86400'})
+    return path
+
+
+def ready_display_video(source: str, name: str) -> Path:
+    if source == 'local':
+        return ready_local_video(name)
+    if source == 'online':
+        path = online_library.ready_path(name)
+        if path is not None:
+            return path
+    raise HTTPException(404, 'Подготовленный ролик не найден')
+
+
+@app.post('/api/admin/display/play-once/{source}/{name}')
+def request_display_video(source: str, name: str, _: None = Depends(auth.require_admin)):
+    ready_display_video(source, name)
+    with LOCK:
+        now = time.monotonic()
+        for token, (created, _, _) in list(DISPLAY_REQUESTS.items()):
+            if now - created >= DISPLAY_MEDIA_WINDOW:
+                del DISPLAY_REQUESTS[token]
+        DISPLAY_REQUESTS[secrets.token_urlsafe(24)] = (now, source, name)
+    return {'ok': True}
+
+
+@app.get('/api/display/play-once')
+def display_video_request():
+    with LOCK:
+        token = next(reversed(DISPLAY_REQUESTS), None)
+        if token and time.monotonic() - DISPLAY_REQUESTS[token][0] < DISPLAY_REQUEST_WINDOW:
+            return {'id': token, 'url': '/api/display/play-once/' + token}
+    return None
+
+
+@app.get('/api/display/play-once/{token}')
+def display_video_file(token: str):
+    with LOCK:
+        command = DISPLAY_REQUESTS.get(token)
+    if command is None or time.monotonic() - command[0] >= DISPLAY_MEDIA_WINDOW:
+        raise HTTPException(404)
+    _, source, name = command
+    return FileResponse(ready_display_video(source, name), media_type='video/mp4')
 
 
 @app.get('/modules/{module_id}')

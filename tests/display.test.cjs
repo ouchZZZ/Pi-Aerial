@@ -62,8 +62,14 @@ function makeHarness() {
     weather: {available: false}, videos: [], modules: [], reload_counter: 0,
   };
   let nextTimer = 0;
+  const bodyClasses = new Set();
+  const session = new Map();
   const context = {
-    document: {getElementById: element, createElement: () => element('module')},
+    document: {
+      getElementById: element, createElement: () => element('module'),
+      body: {classList: {add: name => bodyClasses.add(name), remove: name => bodyClasses.delete(name)}},
+    },
+    sessionStorage: {getItem: key => session.get(key), setItem: (key, value) => session.set(key, value)},
     setInterval: (fn, ms) => intervals.push({fn, ms}),
     setTimeout: (fn, ms) => {
       const timer = {id: ++nextTimer, fn, ms, cleared: false};
@@ -74,7 +80,8 @@ function makeHarness() {
       const timer = timers.find(t => t.id === id);
       if (timer) timer.cleared = true;
     },
-    fetch: async () => ({ok: true, json: async () => ({
+    fetch: async url => ({ok: true, json: async () => url === '/api/display/play-once'
+      ? publicState.displayRequest : ({
       ...publicState, settings: {...publicState.settings},
       videos: [...publicState.videos], modules: [...publicState.modules],
     })}),
@@ -83,7 +90,7 @@ function makeHarness() {
   };
   vm.createContext(context);
   vm.runInContext(displayJS, context, {filename: 'display.js'});
-  return {context, elements, video, timers, intervals, errors, publicState};
+  return {context, elements, video, timers, intervals, errors, publicState, bodyClasses};
 }
 async function settle() {
   await new Promise(resolve => setImmediate(resolve));
@@ -98,6 +105,45 @@ test('idle background has no perpetually running CSS animation', () => {
   assert.doesNotMatch(displayCSS, /animation:\s*float\b/);
   assert.doesNotMatch(displayCSS, /@keyframes\s+float\b/);
   assert.match(displayCSS, /#video\.ready/); // Video fade-in remains available
+});
+
+test('night shade covers all OSD layers and remains separate from one-shot hiding', () => {
+  const zIndex = selector => Number(displayCSS.match(new RegExp(selector + '\\{[^}]*z-index:(\\d+)'))[1]);
+  assert.ok(zIndex('#nightShade') > zIndex('\\.module-layer'));
+  assert.ok(zIndex('#nightShade') > zIndex('\\.calendar-card'));
+  assert.match(displayCSS, /body\.playing-once :is\(#shade,#clockCard,#calendarCard,#moduleLayer,#clipFooter\)\{display:none\}/);
+});
+
+test('one-shot skips the rotation timer and restores OSD and playlist on end or failure', async () => {
+  const h = await ready();
+  h.publicState.settings.video_interval_minutes = 1;
+  h.publicState.videos = [{url: '/media/first.mp4'}];
+  await h.context.poll();
+  const rotation = h.timers.at(-1);
+  h.publicState.displayRequest = {id: 'once', url: '/api/display/play-once/once'};
+  await h.context.pollDisplayRequest();
+  assert.equal(h.video.src, h.publicState.displayRequest.url);
+  assert.ok(h.bodyClasses.has('playing-once'));
+  assert.ok(rotation.cleared);
+  h.video.pending.at(-1).resolve();
+  await settle();
+  assert.ok(h.timers.every(timer => timer.cleared));
+
+  h.publicState.videos.push({url: '/media/second.mp4'});
+  await h.context.poll();
+  assert.equal(h.video.src, h.publicState.displayRequest.url);
+  h.video.dispatch('ended');
+  assert.equal(h.video.src, '/media/second.mp4');
+  assert.ok(!h.bodyClasses.has('playing-once'));
+  await h.context.pollDisplayRequest();
+  assert.equal(h.video.src, '/media/second.mp4');
+
+  h.publicState.displayRequest = {id: 'broken', url: '/api/display/play-once/broken'};
+  await h.context.pollDisplayRequest();
+  h.video.pending.at(-1).reject(new Error('Format unsupported'));
+  await settle();
+  assert.equal(h.video.src, '/media/first.mp4');
+  assert.ok(!h.bodyClasses.has('playing-once'));
 });
 
 test('clock is polled every ten seconds and unchanged text is not rewritten', async () => {

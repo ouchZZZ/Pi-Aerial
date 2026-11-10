@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 let state=null, videos=[], videoPos=-1, changeTimer=null, lastReload=null, selectedFile='';
 let playAttempt=0, failedAttempt=-1, selectedVideo=null;
 let osdRight=false, hasPlayedVideo=false;
+let playingOnce=false, pollingDisplayRequest=false;
 const rejectedUntil=new Map();
 const video=$('video');
 const wxText={0:'Ясно',1:'Преимущественно ясно',2:'Переменная облачность',3:'Пасмурно',45:'Туман',48:'Туман',51:'Морось',53:'Морось',55:'Морось',61:'Небольшой дождь',63:'Дождь',65:'Сильный дождь',71:'Небольшой снег',73:'Снег',75:'Сильный снег',80:'Ливни',81:'Ливни',82:'Сильные ливни',95:'Гроза',96:'Гроза',99:'Гроза'};
@@ -132,13 +133,17 @@ function reportPlaybackFailure(attempt,err){
   const mediaError=video.error;
   const code=mediaError?.code||0;
   const name=err?.name||(code?'MediaError':'неизвестная');
-  rejectedUntil.set(selectedFile,Date.now()+180000);
   console.error('Pi Aerial playback failed',{
     id:selectedFile,provider:selectedVideo?.provider||'local',name:selectedVideo?.name,
     error:name,message:err?.message||mediaError?.message||'',mediaError:code,
     networkState:video.networkState,readyState:video.readyState,
     h264Support:video.canPlayType('video/mp4; codecs="avc1.42E01E"')
   });
+  if(playingOnce){
+    changeVideo();
+    return;
+  }
+  rejectedUntil.set(selectedFile,Date.now()+180000);
   video.classList.remove('ready');
   setText('clipName','ОШИБКА ВИДЕО: '+name+' · код '+code);
   clearTimeout(changeTimer);
@@ -146,10 +151,14 @@ function reportPlaybackFailure(attempt,err){
 }
 function changeVideo(){
   clearTimeout(changeTimer);
-  const attempt=++playAttempt;
+  if(playingOnce){
+    playingOnce=false;
+    document.body.classList.remove('playing-once');
+  }
   const now=Date.now();
   const candidates=videos.map((v,i)=>({v,i})).filter(x=>(rejectedUntil.get(x.v.id||x.v.url)||0)<now);
   if(!candidates.length){
+    ++playAttempt;
     selectedFile='';
     selectedVideo=null;
     video.classList.remove('ready');
@@ -174,22 +183,49 @@ function changeVideo(){
     selected=pool[Math.floor(Math.random()*pool.length)]||candidates[0];
   }
   videoPos=selected.i;
-  selectedFile=selected.v.id||selected.v.url;
-  selectedVideo=selected.v;
-  setText('clipName',selected.v.credit||'ВИДЕОЗАСТАВКА');
-  renderClipDescription(0);
-  video.classList.remove('ready');
-  video.src=selected.v.url;
-  video.load();
-  video.play().then(()=>{
-    if(attempt!==playAttempt || failedAttempt===attempt)return;
-    if(hasPlayedVideo)osdRight=!osdRight;
-    hasPlayedVideo=true;
-    renderOsdPosition();
-    video.classList.add('ready');
-  }).catch(err=>reportPlaybackFailure(attempt,err));
+  playVideo(selected.v);
   const minutes=Number(cfg.video_interval_minutes);
   if(minutes>0)changeTimer=setTimeout(changeVideo,minutes*60000);
+}
+function playVideo(clip){
+  const attempt=++playAttempt;
+  selectedFile=clip.id||clip.url;
+  selectedVideo=clip;
+  setText('clipName',clip.credit||'ВИДЕОЗАСТАВКА');
+  renderClipDescription(0);
+  video.classList.remove('ready');
+  video.src=clip.url;
+  video.load();
+  if(playingOnce){
+    changeTimer=setTimeout(()=>reportPlaybackFailure(attempt,new Error('Время запуска видео истекло')),15000);
+  }
+  video.play().then(()=>{
+    if(attempt!==playAttempt || failedAttempt===attempt)return;
+    if(playingOnce){
+      clearTimeout(changeTimer);
+    }else{
+      if(hasPlayedVideo)osdRight=!osdRight;
+      hasPlayedVideo=true;
+      renderOsdPosition();
+    }
+    video.classList.add('ready');
+  }).catch(err=>reportPlaybackFailure(attempt,err));
+}
+async function pollDisplayRequest(){
+  if(!state||pollingDisplayRequest)return;
+  pollingDisplayRequest=true;
+  try{
+    const r=await fetch('/api/display/play-once',{cache:'no-store'});
+    if(!r.ok)throw Error(r.status);
+    const request=await r.json();
+    if(!request||request.id===sessionStorage.getItem('lastDisplayRequest'))return;
+    sessionStorage.setItem('lastDisplayRequest',request.id);
+    clearTimeout(changeTimer);
+    playingOnce=true;
+    document.body.classList.add('playing-once');
+    playVideo(request);
+  }catch(e){console.warn('Pi Aerial: display request unavailable',e);}
+  finally{pollingDisplayRequest=false;}
 }
 function renderModules(){
   const layer=$('moduleLayer');
@@ -231,7 +267,7 @@ async function poll(){
     renderOsdPosition();
     drawTime();
     showWeather();
-    if(first||shouldChange)changeVideo();
+    if(!playingOnce&&(first||shouldChange))changeVideo();
     if(first||oldIds!==newIds)renderModules();
     // Preserve the 30-second widget heartbeat for third-party modules.
     for(const frame of $('moduleLayer').querySelectorAll('iframe'))sendModuleData(frame);
@@ -252,4 +288,5 @@ video.addEventListener('ended',changeVideo);
 video.addEventListener('error',()=>reportPlaybackFailure(playAttempt,video.error));
 setInterval(drawTime,10000);
 setInterval(poll,30000);
+setInterval(pollDisplayRequest,3000);
 poll();

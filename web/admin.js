@@ -182,12 +182,27 @@ async function loadLibrary(){
     toast(e.message);
   }finally{libraryLoading=false}
 }
-function openLibraryPreview(title,url){
+function openLibraryPreview(title,url,filename){
   const dialog=$('libraryPreviewDialog'),player=$('libraryPreviewPlayer');
   $('libraryPreviewTitle').textContent=title;
+  const download=$('libraryPreviewDownload');
+  download.href=url;
+  download.download=filename;
   player.src=url;
   dialog.showModal();
   player.play().catch(()=>{});
+}
+function playOnceButton(source,name){
+  const button=textNode('button','Показать один раз без OSD');
+  button.addEventListener('click',async()=>{
+    button.disabled=true;
+    try{
+      await api('/api/admin/display/play-once/'+source+'/'+encodeURIComponent(name),{method:'POST'});
+      toast('Запрос отправлен на экран заставки');
+    }catch(e){toast(e.message)}
+    finally{button.disabled=false}
+  });
+  return button;
 }
 function renderLibrary(onlineVideos){
   const onlineRoot=$('onlineLibraryList'),localRoot=$('localLibraryList');
@@ -208,7 +223,7 @@ function renderLibrary(onlineVideos){
     if(v.cached){
       const preview=textNode('button','Просмотр');
       preview.addEventListener('click',()=>openLibraryPreview(
-        v.name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview'));
+        v.name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview',v.name+'.mp4'));
       const remove=textNode('button','Удалить файл');
       remove.addEventListener('click',async()=>{
         if(!confirm('Удалить готовый MP4? Запрет повторной загрузки останется.'))return;
@@ -219,7 +234,7 @@ function renderLibrary(onlineVideos){
           await load();await loadLibrary();
         }catch(e){toast(e.message);remove.disabled=false}
       });
-      controls.append(preview,remove);
+      controls.append(preview,playOnceButton('online',v.id),remove);
     }else{
       if(v.can_redownload){
         const unlock=textNode('button','Разрешить повторную загрузку');
@@ -244,7 +259,7 @@ function renderLibrary(onlineVideos){
     const row=line(v.name,'Локальная загрузка · '+progressSize(v.bytes));
     const controls=document.createElement('div');controls.className='inline-actions library-actions';
     const preview=textNode('button','Просмотр');
-    preview.addEventListener('click',()=>openLibraryPreview(v.name,v.url));
+    preview.addEventListener('click',()=>openLibraryPreview(v.name,v.url,v.name));
     const remove=textNode('button','Удалить файл');
     remove.addEventListener('click',async()=>{
       if(!confirm('Удалить загруженный вами файл с карты?'))return;
@@ -254,7 +269,7 @@ function renderLibrary(onlineVideos){
         toast('Файл удалён');await load();await loadLibrary();
       }catch(e){toast(e.message);remove.disabled=false}
     });
-    controls.append(preview,remove);row.append(controls);localRoot.append(row);
+    controls.append(preview,playOnceButton('local',v.name),remove);row.append(controls);localRoot.append(row);
   }
   if(!(status?.videos||[]).length)localRoot.append(textNode('p','Своих готовых файлов пока нет.','hint'));
 }
