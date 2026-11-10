@@ -2,6 +2,7 @@
 const $ = id => document.getElementById(id);
 let state=null, videos=[], videoPos=-1, changeTimer=null, lastReload=null, selectedFile='';
 let playAttempt=0, failedAttempt=-1, selectedVideo=null;
+let osdRight=false, hasPlayedVideo=false;
 const rejectedUntil=new Map();
 const video=$('video');
 const wxText={0:'Ясно',1:'Преимущественно ясно',2:'Переменная облачность',3:'Пасмурно',45:'Туман',48:'Туман',51:'Морось',53:'Морось',55:'Морось',61:'Небольшой дождь',63:'Дождь',65:'Сильный дождь',71:'Небольшой снег',73:'Снег',75:'Сильный снег',80:'Ливни',81:'Ливни',82:'Сильные ливни',95:'Гроза',96:'Гроза',99:'Гроза'};
@@ -35,13 +36,14 @@ function drawTime(){
   const date=new Intl.DateTimeFormat(locale,{timeZone:c.timezone,weekday:'long',day:'numeric',month:'long'}).format(now);
   setText('clock',clock);
   setText('date',date.charAt(0).toUpperCase()+date.slice(1));
-  setText('topDate',c.city);
+  setText('city',c.city||'');
   const night=c.night_mode&&(c.night_start<=c.night_end?(hour>=c.night_start&&hour<c.night_end):(hour>=c.night_start||hour<c.night_end));
   setStyle('nightShade','opacity',night?String(1-c.night_opacity):'0');
   // Move fixed UI elements just a little to reduce persistent static pixels on OLED.
   const offset=c.clock_shift?Math.floor(now.getTime()/600000)%4:0;
   const dx=[0,14,-9,6][offset],dy=[0,-8,10,3][offset];
   setStyle('clockCard','marginLeft',dx+'px');
+  setStyle('clockCard','marginRight',-dx+'px');
   setStyle('clockCard','marginTop',dy+'px');
 }
 function showWeather(){
@@ -99,7 +101,6 @@ function changeVideo(){
       video.load();
     }
     setText('clipName',videos.length?'НЕ УДАЛОСЬ ПОЛУЧИТЬ ВИДЕО · ПОВТОР ЧЕРЕЗ 60 С':(state?.settings?.online_sources?.apple?'ПОДГОТОВКА APPLE AERIAL · ЗАГРУЗКА В КЕШ':'НЕТ ВИДЕО · ВКЛЮЧИТЕ ИСТОЧНИКИ'));
-    setText('videoIndex','');
     setText('clipDescription','');
     setHidden('clipDescription',true);
     changeTimer=setTimeout(()=>{rejectedUntil.clear();changeVideo();},60000);
@@ -116,17 +117,20 @@ function changeVideo(){
   videoPos=selected.i;
   selectedFile=selected.v.id||selected.v.url;
   selectedVideo=selected.v;
-  setText('clipName',selected.v.credit||'PI AERIAL · ВИДЕОЗАСТАВКА');
+  setText('clipName',selected.v.credit||'ВИДЕОЗАСТАВКА');
   const description=typeof selected.v.description==='string'
     ?selected.v.description.trim().slice(0,220):'';
   setText('clipDescription',description);
   setHidden('clipDescription',!description);
-  setText('videoIndex',(selected.i+1)+' / '+videos.length);
   video.classList.remove('ready');
   video.src=selected.v.url;
   video.load();
   video.play().then(()=>{
-    if(attempt===playAttempt && failedAttempt!==attempt)video.classList.add('ready');
+    if(attempt!==playAttempt || failedAttempt===attempt)return;
+    if(hasPlayedVideo)osdRight=!osdRight;
+    hasPlayedVideo=true;
+    renderOsdPosition();
+    video.classList.add('ready');
   }).catch(err=>reportPlaybackFailure(attempt,err));
   const minutes=Number(cfg.video_interval_minutes);
   if(minutes>0)changeTimer=setTimeout(changeVideo,minutes*60000);
@@ -145,6 +149,13 @@ function renderModules(){
   }
 }
 function sendModuleData(frame){frame.contentWindow?.postMessage({type:'aerial:data',config:state?.settings,weather:state?.weather,time:Date.now()},'*');}
+function renderOsdPosition(){
+  const sideClass=osdRight?' osd-right':'';
+  const positionClass='clock-card '+state.settings.clock_position+sideClass;
+  if($('clockCard').className!==positionClass)$('clockCard').className=positionClass;
+  const footerClass='footer'+sideClass;
+  if($('clipFooter').className!==footerClass)$('clipFooter').className=footerClass;
+}
 async function poll(){
   try{
     const r=await fetch('/api/public',{cache:'no-store'});
@@ -159,8 +170,7 @@ async function poll(){
     const shouldChange=listChanged(next.videos);
     state=next;
     videos=next.videos;
-    const positionClass='clock-card '+state.settings.clock_position;
-    if($('clockCard').className!==positionClass)$('clockCard').className=positionClass;
+    renderOsdPosition();
     drawTime();
     showWeather();
     if(first||shouldChange)changeVideo();

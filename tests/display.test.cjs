@@ -104,7 +104,7 @@ test('clock is polled every ten seconds and unchanged text is not rewritten', as
   const h = await ready();
   assert.ok(h.intervals.some(timer => timer.ms === 10000));
   assert.ok(h.intervals.some(timer => timer.ms === 30000));
-  const ids = ['clock', 'date', 'topDate', 'wxTemp', 'wxDetail', 'wxIcon'];
+  const ids = ['clock', 'date', 'city', 'wxTemp', 'wxDetail', 'wxIcon'];
   const before = ids.map(id => h.elements.get(id).writes);
   h.context.drawTime();
   h.context.showWeather();
@@ -154,4 +154,19 @@ test('old play promise rejects do not blacklist a new video', async () => {
   assert.equal(h.errors.length, 0);
   assert.equal(h.timers.filter(t => t.ms === 4000).length, 0);
   assert.equal(vm.runInContext('rejectedUntil.size', h.context), 0);
+});
+
+test('both OSD blocks alternate sides when a video starts playing', async () => {
+  const h = await ready();
+  h.publicState.videos = [{id: 'one', url: '/media/one'}, {id: 'two', url: '/media/two'}];
+  await h.context.poll();
+  const isRight = id => h.elements.get(id).className.includes('osd-right');
+  for (const [index, right] of [false, true, false].entries()) {
+    h.video.pending[index].resolve();
+    await settle();
+    await h.context.poll();
+    assert.equal(isRight('clockCard'), right);
+    assert.equal(isRight('clipFooter'), right);
+    if (index < 2) h.video.dispatch('ended');
+  }
 });
