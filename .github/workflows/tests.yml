@@ -18,4 +18,6 @@ jobs:
       - name: Check Python syntax
         run: python -m compileall -q app tools
       - name: Check shell syntax
-        run: bash -n install.sh
+        run: bash -n install.sh tools/system_deps.sh
+      - name: List allowed system dependencies
+        run: bash tools/system_deps.sh --list
