@@ -5,12 +5,12 @@ import json
 import os
 import tempfile
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
-from pathlib import Path
 
 # Isolate all test storage from any real Pi Aerial installation.
 TEST_BASE = Path(tempfile.mkdtemp(prefix='pi-aerial-test-'))

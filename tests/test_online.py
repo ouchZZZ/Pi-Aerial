@@ -321,7 +321,7 @@ def test_apple_mov_cache_forces_transcode_and_removes_source(monkeypatch, tmp_pa
     assert not (tmp_path / (clip["id"] + ".part")).exists()
     assert clip["id"] in online._processed_ids()
 
-    
+
 def test_cache_worker_releases_its_original_slot(monkeypatch):
     import threading
     original = threading.BoundedSemaphore(1)
