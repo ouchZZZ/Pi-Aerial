@@ -46,6 +46,20 @@ $('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const f
 $('settingsForm').elements.night_opacity.addEventListener('input',updateNightValue);
 $('reloadDisplay').addEventListener('click',async()=>{try{await api('/api/admin/display/reload',{method:'POST'});toast('Экран перезагрузится при следующей проверке')}catch(e){toast(e.message)}});
 $('videoForm').addEventListener('submit',e=>{e.preventDefault();upload('videoForm','videoInput','/api/admin/videos')});
+$('onlineRefresh').addEventListener('click',async()=>{
+  const button=$('onlineRefresh');
+  button.disabled=true;
+  $('onlineSourceMessage').textContent='Проверяю Apple и NASA…';
+  try{
+    await api('/api/admin/online/refresh',{method:'POST'});
+    await load();
+    $('onlineSourceMessage').textContent='Проверка завершена';
+    toast('Каталоги Apple/NASA перепроверены');
+  }catch(e){
+    $('onlineSourceMessage').textContent=e.message;
+    toast(e.message);
+  }finally{button.disabled=false}
+});
 $('onlineCacheSave').addEventListener('click',async()=>{
   const cache_gb=Number($('onlineCacheLimit').value);
   if(!Number.isInteger(cache_gb)||cache_gb<1||cache_gb>64){toast('Размер кеша: от 1 до 64 ГБ');return;}
