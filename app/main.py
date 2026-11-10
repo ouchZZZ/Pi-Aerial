@@ -25,7 +25,7 @@ from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, 
 init_data()
 STOP = threading.Event()
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
-VIDEO_EXTENSIONS = {'.mp4', '.webm', '.m4v'}
+VIDEO_EXTENSIONS = {'.mp4', '.webm', '.m4v', '.mov', '.mkv'}
 
 
 @asynccontextmanager
@@ -330,19 +330,19 @@ async def add_video(file: UploadFile = File(...), _: None = Depends(auth.require
     original = Path(file.filename or 'video.mp4').name
     suffix = Path(original).suffix.lower()
     if suffix not in VIDEO_EXTENSIONS:
-        raise HTTPException(422, 'Поддерживаются MP4, WebM и M4V')
+        raise HTTPException(422, 'Поддерживаются MP4, WebM, M4V, MOV и MKV')
     free = shutil.disk_usage(DATA).free
-    if free < 3 * 1024**3:
-        raise HTTPException(507, 'Недостаточно свободного места (резерв 3 ГБ)')
-    maximum = min(10 * 1024**3, max(0, free - 3 * 1024**3))
+    if free < 9 * 1024**3:
+        raise HTTPException(507, 'Нужно 9 ГБ свободного места для загрузки и обработки')
+    maximum = min(10 * 1024**3, max(0, free - 9 * 1024**3))
     try:
         incoming = await save_upload(file, maximum, suffix)
         with incoming.open('rb') as handle:
             header = handle.read(12)
-        if suffix in ('.mp4', '.m4v') and header[4:8] != b'ftyp':
-            raise ValueError('Это не MP4/M4V-файл')
-        if suffix == '.webm' and not header.startswith(b'\x1a\x45\xdf\xa3'):
-            raise ValueError('Это не WebM-файл')
+        if suffix in ('.mp4', '.m4v', '.mov') and header[4:8] != b'ftyp':
+            raise ValueError('Это не MP4/M4V/MOV-файл')
+        if suffix in ('.webm', '.mkv') and not header.startswith(b'\x1a\x45\xdf\xa3'):
+            raise ValueError('Это не WebM/MKV-файл')
         safe_name = re.sub(r'[^0-9A-Za-zА-Яа-яЁё._-]+', '_', original)[:100].strip('._-')
         if not safe_name or not safe_name.lower().endswith(suffix):
             safe_name = 'video' + suffix
