@@ -42,8 +42,16 @@
 .layout-controls label:nth-child(2){min-width:220px;flex:1}
 .layout-controls output{float:right;font-weight:750;color:#167c90}
 .layout-stage{position:relative;aspect-ratio:16/9;width:100%;overflow:hidden;border-radius:13px;background:#0a1b28;touch-action:none;box-shadow:inset 0 0 0 1px #24495c}
+/* Grid stays inside the admin preview: 32 columns × 18 rows, i.e. 40px cells at 1280×720. */
+.layout-grid-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:4px 0 15px}
+.layout-grid-controls .hint{margin:0}
+.layout-grid-toggle{display:inline-flex!important;align-items:center;gap:8px;margin:0!important;font-weight:650!important;cursor:pointer}
+.layout-grid-toggle input{accent-color:#087f96;width:17px;height:17px}
+.layout-stage.show-grid:after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+  background-image:linear-gradient(to right,#d9f4ff44 1px,transparent 1px),linear-gradient(to bottom,#d9f4ff44 1px,transparent 1px);
+  background-size:3.125% 5.55555556%;background-position:0 0}
 .layout-stage iframe{position:absolute;left:0;top:0;width:1280px;height:720px;border:0;pointer-events:none;transform-origin:top left}
-.layout-overlay{position:absolute;inset:0;pointer-events:none}
+.layout-overlay{position:absolute;inset:0;z-index:2;pointer-events:none}
 .layout-item{position:absolute;box-sizing:border-box;border:2px dashed #bfeefd;border-radius:4px;background:#01a6d00b;pointer-events:auto;cursor:grab;touch-action:none;outline:0}
 .layout-item:focus,.layout-item.selected{border:2px solid #fce386;background:#e6ae390c;z-index:2}
 .layout-item.dragging{cursor:grabbing}
