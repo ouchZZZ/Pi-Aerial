@@ -6,7 +6,13 @@ let osdRight=false, hasPlayedVideo=false;
 let playingOnce=false, pollingDisplayRequest=false;
 const rejectedUntil=new Map();
 const video=$('video');
-const wxText={0:'Ясно',1:'Преимущественно ясно',2:'Переменная облачность',3:'Пасмурно',45:'Туман',48:'Туман',51:'Морось',53:'Морось',55:'Морось',61:'Небольшой дождь',63:'Дождь',65:'Сильный дождь',71:'Небольшой снег',73:'Снег',75:'Сильный снег',80:'Ливни',81:'Ливни',82:'Сильные ливни',95:'Гроза',96:'Гроза',99:'Гроза'};
+const wxTextRu={0:'Ясно',1:'Преимущественно ясно',2:'Переменная облачность',3:'Пасмурно',45:'Туман',48:'Туман',51:'Морось',53:'Морось',55:'Морось',61:'Небольшой дождь',63:'Дождь',65:'Сильный дождь',71:'Небольшой снег',73:'Снег',75:'Сильный снег',80:'Ливни',81:'Ливни',82:'Сильные ливни',95:'Гроза',96:'Гроза',99:'Гроза'};
+
+const wxTextEn={0:'Clear',1:'Mostly clear',2:'Partly cloudy',3:'Overcast',45:'Fog',48:'Fog',51:'Drizzle',53:'Drizzle',55:'Drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',71:'Light snow',73:'Snow',75:'Heavy snow',80:'Showers',81:'Showers',82:'Heavy showers',95:'Thunderstorm',96:'Thunderstorm',99:'Thunderstorm'};
+function displayLanguage(){return state?.settings?.language==='en'?'en':'ru';}
+function conditionText(code){const english=displayLanguage()==='en';return (english?wxTextEn:wxTextRu)[code]||(english?'Weather':'Погода');}
+function displayText(ru,en){return displayLanguage()==='en'?en:ru;}
+function localeName(){return displayLanguage()==='en'?'en-GB':'ru-RU';}
 
 function setText(id, value){
   const element=$(id);
@@ -53,14 +59,14 @@ function calendarDayClass(date){
 }
 function drawCalendar(now, timeZone){
   const dayKey=new Intl.DateTimeFormat('sv-SE',{timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
-  if(dayKey===calendarDay)return;
-  calendarDay=dayKey;
+  if(dayKey+'|'+displayLanguage()===calendarDay)return;
+  calendarDay=dayKey+'|'+displayLanguage();
   const [year,month,day]=dayKey.split('-').map(Number);
-  setText('weekday',new Intl.DateTimeFormat('ru-RU',{timeZone,weekday:'long'}).format(now));
-  setText('date',new Intl.DateTimeFormat('ru-RU',{timeZone,day:'numeric',month:'long',year:'numeric'}).format(now));
+  setText('weekday',new Intl.DateTimeFormat(localeName(),{timeZone,weekday:'long'}).format(now));
+  setText('date',new Intl.DateTimeFormat(localeName(),{timeZone,day:'numeric',month:'long',year:'numeric'}).format(now));
   const firstDay=(new Date(Date.UTC(year,month-1,1)).getUTCDay()+6)%7;
   const days=new Date(Date.UTC(year,month,0)).getUTCDate();
-  const headings=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+  const headings=displayLanguage()==='en'?['Mon','Tue','Wed','Thu','Fri','Sat','Sun']:['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
   $('monthGrid').innerHTML=headings.map(label=>'<span class="day-label">'+label+'</span>').join('')+
     Array.from({length:Math.ceil((firstDay+days)/7)*7},(_,index)=>{
       const number=index-firstDay+1;
@@ -74,16 +80,15 @@ function drawTime(){
   if(!state)return;
   const c=state.settings;
   const {now,hour}=zoneDateParts();
-  const locale='ru-RU';
+  const locale=localeName();
   const clock=new Intl.DateTimeFormat(locale,{timeZone:c.timezone,hour:'2-digit',minute:'2-digit',hourCycle:c.time_format==='12'?'h12':'h23'}).format(now);
   setText('clock',clock);
   if(c.show_date)drawCalendar(now,c.timezone);
-  setText('city',c.city||'');
+  setText('city',displayLanguage()==='en'&&c.city==='Москва'?'Moscow':(c.city||''));
   const night=c.night_mode&&(c.night_start<=c.night_end?(hour>=c.night_start&&hour<c.night_end):(hour>=c.night_start||hour<c.night_end));
   setStyle('nightShade','opacity',night?String(1-c.night_opacity):'0');
 }
-const forecastWeekday=new Intl.DateTimeFormat('ru-RU',{timeZone:'UTC',weekday:'short'});
-const windSpeed=new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1});
+const windSpeedFor=()=>new Intl.NumberFormat(localeName(),{maximumFractionDigits:1});
 let forecastMarkup='';
 function showForecast(weather, settings){
   const today=new Intl.DateTimeFormat('sv-SE',{timeZone:settings.timezone}).format(new Date());
@@ -92,9 +97,9 @@ function showForecast(weather, settings){
     : [];
   const markup=days.map(day=>{
     const date=new Date(day.date+'T00:00:00Z');
-    const label=forecastWeekday.format(date);
+    const label=new Intl.DateTimeFormat(localeName(),{timeZone:'UTC',weekday:'short'}).format(date);
     const icon=iconFor(day.code,true);
-    const condition=wxText[day.code]||'Погода';
+    const condition=conditionText(day.code);
     return '<div class="forecast-day"><span>'+label+'</span><span class="forecast-icon" role="img" aria-label="'+condition+'">'+icon+'</span><span>'+Math.round(day.max)+'°</span><span class="forecast-low">'+Math.round(day.min)+'°</span></div>';
   }).join('');
   if(markup!==forecastMarkup){
@@ -106,6 +111,8 @@ function showForecast(weather, settings){
 function showWeather(){
   if(!state)return;
   const w=state.weather,c=state.settings;
+  setText('weatherCredit',displayText('Погода: Open-Meteo','Weather: Open-Meteo'));
+  $('forecast').setAttribute?.('aria-label',displayText('Прогноз на неделю','Weekly forecast'));
   setHidden('clock',!c.show_clock);
   setHidden('calendarCard',!c.show_date);
   setHidden('clockCard',!c.show_clock&&!c.show_weather);
@@ -114,14 +121,16 @@ function showWeather(){
   showForecast(w,c);
   if(!c.show_weather)return;
   if(!w.available){
-    setText('wxTemp','Погода недоступна');
-    setText('wxDetail','Ожидаем соединения');
+    setText('wxTemp',displayText('Погода недоступна','Weather unavailable'));
+    setText('wxDetail',displayText('Ожидаем соединения','Waiting for connection'));
     setText('wxIcon','◌');
     return;
   }
   setText('wxIcon',iconFor(Number(w.code),w.is_day));
-  setText('wxTemp',Math.round(w.temperature)+'°C · '+(wxText[w.code]||'Погода'));
-  setText('wxDetail','Ощущается '+Math.round(w.apparent)+'° · ветер '+windSpeed.format(w.wind/3.6)+' м/с'+(w.stale?' · данные '+w.age_minutes+' мин. назад':''));
+  setText('wxTemp',Math.round(w.temperature)+'°C · '+conditionText(w.code));
+  setText('wxDetail',displayLanguage()==='en'
+    ? 'Feels like '+Math.round(w.apparent)+'° · wind '+windSpeedFor().format(w.wind/3.6)+' m/s'+(w.stale?' · updated '+w.age_minutes+' min ago':'')
+    : 'Ощущается '+Math.round(w.apparent)+'° · ветер '+windSpeedFor().format(w.wind/3.6)+' м/с'+(w.stale?' · данные '+w.age_minutes+' мин. назад':''));
 }
 function listChanged(list){return list.map(x=>x.id||x.url).join('|')!==videos.map(x=>x.id||x.url).join('|');}
 
@@ -145,7 +154,7 @@ function reportPlaybackFailure(attempt,err){
   }
   rejectedUntil.set(selectedFile,Date.now()+180000);
   video.classList.remove('ready');
-  setText('clipName','ОШИБКА ВИДЕО: '+name+' · код '+code);
+  setText('clipName',displayText('ОШИБКА ВИДЕО: ','VIDEO ERROR: ')+name+displayText(' · код ',' · code ')+code);
   clearTimeout(changeTimer);
   changeTimer=setTimeout(changeVideo,4000);
 }
@@ -168,7 +177,11 @@ function changeVideo(){
       video.removeAttribute('src');
       video.load();
     }
-    setText('clipName',videos.length?'НЕ УДАЛОСЬ ПОЛУЧИТЬ ВИДЕО · ПОВТОР ЧЕРЕЗ 60 С':(state?.settings?.online_sources?.apple?'ПОДГОТОВКА APPLE AERIAL · ЗАГРУЗКА В КЕШ':'НЕТ ВИДЕО · ВКЛЮЧИТЕ ИСТОЧНИКИ'));
+    setText('clipName',videos.length
+      ?displayText('НЕ УДАЛОСЬ ПОЛУЧИТЬ ВИДЕО · ПОВТОР ЧЕРЕЗ 60 С','VIDEO UNAVAILABLE · RETRY IN 60 S')
+      :(state?.settings?.online_sources?.apple
+        ?displayText('ПОДГОТОВКА APPLE AERIAL · ЗАГРУЗКА В КЕШ','PREPARING APPLE AERIAL · CACHING')
+        :displayText('НЕТ ВИДЕО · ВКЛЮЧИТЕ ИСТОЧНИКИ','NO VIDEOS · ENABLE SOURCES')));
     setText('clipDescription','');
     setHidden('clipDescription',true);
     changeTimer=setTimeout(()=>{rejectedUntil.clear();changeVideo();},60000);
@@ -191,7 +204,8 @@ function playVideo(clip){
   const attempt=++playAttempt;
   selectedFile=clip.id||clip.url;
   selectedVideo=clip;
-  setText('clipName',clip.credit||'ВИДЕОЗАСТАВКА');
+  setText('clipName',clip.credit||displayText('ВИДЕОЗАСТАВКА','VIDEO SCREENSAVER'));
+
   renderClipDescription(0);
   video.classList.remove('ready');
   video.src=clip.url;
@@ -267,6 +281,7 @@ async function poll(){
     if(shouldReload){location.reload();return;}
     const shouldChange=listChanged(next.videos);
     state=next;
+    if(document.documentElement)document.documentElement.lang=displayLanguage();
     videos=next.videos;
     renderOsdPosition();
     drawTime();

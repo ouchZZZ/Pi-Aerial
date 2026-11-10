@@ -31,3 +31,28 @@ Weather data by [Open-Meteo.com](https://open-meteo.com/).
 https://open-meteo.com/en/terms
 
 Сторонние программные зависимости используются по собственным лицензиям.
+
+
+## City search and OpenStreetMap map
+
+City name search uses the Open-Meteo Geocoding API with geographic names
+based on **GeoNames**: https://open-meteo.com/en/docs/geocoding-api
+
+When an administrator explicitly opens the map, the interface loads
+**Leaflet 1.9.4** (BSD-2-Clause license; https://leafletjs.com/)
+and OpenStreetMap tiles. Map attribution is displayed inside the map:
+© OpenStreetMap contributors (https://www.openstreetmap.org/copyright).
+Tiles are requested only for the visible interactive viewport, without
+prefetching or offline bulk downloads.
+
+Clicking the map sends the chosen coordinates to the public
+**OpenStreetMap Nominatim** reverse-geocoding service to find a nearby
+settlement. Requests are user-initiated and rate-limited in the interface.
+Source and usage policies:
+- https://operations.osmfoundation.org/policies/tiles/
+- https://operations.osmfoundation.org/policies/nominatim/
+- https://www.openstreetmap.org/copyright
+
+Open-Meteo may also be asked for the time zone at the selected point.
+If external services are unavailable, the user can enter the city,
+coordinates and time zone manually.

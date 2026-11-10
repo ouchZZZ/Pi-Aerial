@@ -281,3 +281,32 @@ test('calendar fills the last week with muted dates from the next month', async 
   h.context.drawCalendar(new Date('2027-12-31T12:00:00Z'), 'UTC');
   assert.match(h.elements.get('monthGrid').innerHTML, /<span class="next-month">1<\/span><span class="next-month">2<\/span>$/);
 });
+
+
+test('English UI localizes Moscow, date, weekly forecast and weather details', async () => {
+  const h = await ready();
+  h.publicState.settings.language = 'en';
+  h.publicState.settings.timezone = 'Europe/Moscow';
+  h.publicState.settings.city = 'Москва';
+  h.publicState.weather = {
+    available: true, temperature: 18, apparent: 17, code: 0,
+    wind: 18, is_day: true, stale: false,
+    forecast: [{date: '2027-01-11', min: 9, max: 20, code: 0}],
+  };
+  await h.context.poll();
+  assert.equal(h.elements.get('city').textContent, 'Moscow');
+  assert.equal(h.elements.get('weatherCredit').textContent, 'Weather: Open-Meteo');
+  assert.match(h.elements.get('wxTemp').textContent, /Clear/);
+  assert.match(h.elements.get('wxDetail').textContent, /Feels like 17°/);
+  assert.match(h.elements.get('wxDetail').textContent, /5 m\/s/);
+  assert.match(h.elements.get('monthGrid').innerHTML, /Mon/);
+  assert.doesNotMatch(h.elements.get('monthGrid').innerHTML, /Пн/);
+
+  h.publicState.settings.language = 'ru';
+  await h.context.poll();
+  assert.equal(h.elements.get('city').textContent, 'Москва');
+  assert.equal(h.elements.get('weatherCredit').textContent, 'Погода: Open-Meteo');
+  assert.match(h.elements.get('wxTemp').textContent, /Ясно/);
+  assert.match(h.elements.get('wxDetail').textContent, /Ощущается/);
+  assert.match(h.elements.get('monthGrid').innerHTML, /Пн/);
+});

@@ -21,3 +21,16 @@
 .library-dialog-header strong{overflow-wrap:anywhere}
 .library-dialog video{display:block;width:100%;max-height:74vh;background:#03080e;border-radius:10px}
 @media(max-width:750px){.library-heading{align-items:flex-start;flex-direction:column}.library-actions{justify-content:flex-start}.line{flex-wrap:wrap}}
+
+/* Map picker is only loaded when the admin opens it; source selection works without maps. */
+.language-picker{display:flex;align-items:center;gap:7px;font-size:12px;color:#bed5dc}
+.language-picker select{padding:6px 9px;border-radius:7px;background:#152d3b;color:#fff;border:1px solid #486372;min-width:85px}
+.location-tools{display:flex;gap:9px;flex-wrap:wrap;margin:10px 0}
+.location-tools button,.city-results button{border:1px solid #bdd1da;background:#eef7f9;color:#174358;border-radius:8px;padding:9px 12px;cursor:pointer}
+.location-tools button:hover,.city-results button:hover{background:#d8f0f5}
+.city-results{display:grid;gap:6px;margin:8px 0;max-height:190px;overflow:auto}
+.city-results button{text-align:left;width:100%;display:block}
+.weather-map{height:310px;min-height:310px;width:100%;border-radius:12px;border:1px solid #bdd1da;overflow:hidden;z-index:0}
+.weather-map[hidden]{display:none}
+#locationStatus{margin:8px 0 14px;min-height:1.5em}
+@media(max-width:750px){.language-picker span{display:none}.header-right{flex-wrap:wrap}.weather-map{height:265px;min-height:265px}}

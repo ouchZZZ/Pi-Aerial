@@ -11,6 +11,7 @@ import time
 import urllib.error
 from contextlib import asynccontextmanager
 from pathlib import Path
+from zoneinfo import available_timezones
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -67,7 +68,10 @@ app.mount('/assets', StaticFiles(directory=WEB), name='assets')
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['Referrer-Policy'] = 'no-referrer'
+    # The interactive OSM map requires an Origin/Referer on tile requests.
+    # Send only the site's origin (never the admin path or credentials).
+    response.headers['Referrer-Policy'] = ('strict-origin-when-cross-origin'
+                                            if request.url.path == '/admin' else 'no-referrer')
     response.headers.setdefault('Cache-Control', 'no-store' if request.url.path.startswith(('/api/', '/assets/', '/admin')) else 'public, max-age=300')
     if request.url.path.startswith('/admin'):
         response.headers['X-Frame-Options'] = 'DENY'
@@ -365,6 +369,13 @@ def admin_status(_: None = Depends(auth.require_admin)):
 def admin_video_progress(_: None = Depends(auth.require_admin)):
     """Private, short-lived telemetry. No remote URLs or file paths."""
     return video_progress.snapshot()
+
+
+@app.get('/api/admin/timezones')
+def admin_timezones(_: None = Depends(auth.require_admin)):
+    """IANA zones installed on the device; choices match backend validation."""
+    zones = sorted(available_timezones())
+    return {'timezones': zones or ['UTC', 'Europe/Moscow']}
 
 
 @app.put('/api/admin/config')
