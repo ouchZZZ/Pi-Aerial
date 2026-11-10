@@ -63,6 +63,7 @@ def test_tvos26_tar_manifest_parsed_without_extraction(monkeypatch):
     import io
     import json
     import tarfile
+    import plistlib
 
     data = json.dumps({"assets": [{"id": "new-clip"}]}).encode()
     stream = io.BytesIO()
@@ -70,13 +71,19 @@ def test_tvos26_tar_manifest_parsed_without_extraction(monkeypatch):
         info = tarfile.TarInfo("Customer/entries.json")
         info.size = len(data)
         archive.addfile(info, io.BytesIO(data))
+        strings = plistlib.dumps({"caption": "Антарктида"}, fmt=plistlib.FMT_BINARY)
+        info = tarfile.TarInfo("TVIdleScreenStrings.bundle/ru.lproj/Localizable.nocache.strings")
+        info.size = len(strings)
+        archive.addfile(info, io.BytesIO(strings))
 
     class FakeResponse(io.BytesIO):
         pass
 
     monkeypatch.setattr(online.urllib.request, "urlopen",
                         lambda *args, **kwargs: FakeResponse(stream.getvalue()))
-    assert online._apple_manifest()["assets"][0]["id"] == "new-clip"
+    manifest, strings = online._apple_manifest()
+    assert manifest["assets"][0]["id"] == "new-clip"
+    assert strings == {"caption": "Антарктида"}
 
 
 def test_catalog_respects_metadata_ttl(monkeypatch, tmp_path):

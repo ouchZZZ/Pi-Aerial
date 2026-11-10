@@ -204,3 +204,9 @@ test('weekly forecast skips today and follows the weather switch', async () => {
   await h.context.poll();
   assert.equal(forecast.hidden, true);
 });
+
+test('calendar fills the last week with muted dates from the next month', async () => {
+  const h = await ready();
+  h.context.drawCalendar(new Date('2027-12-31T12:00:00Z'), 'UTC');
+  assert.match(h.elements.get('monthGrid').innerHTML, /<span class="next-month">1<\/span><span class="next-month">2<\/span>$/);
+});
