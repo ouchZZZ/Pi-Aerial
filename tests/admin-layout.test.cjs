@@ -90,6 +90,15 @@ function harness(settings={},initialGrid=null){
   };
   const save=()=>node('layoutSave').dispatch('click');
   const reset=()=>node('layoutReset').dispatch('click');
+  const font=name=>{
+    node('layoutFont').value=name;
+    node('layoutFont').dispatch('change',{target:node('layoutFont')});
+  };
+  const color=value=>{
+    node('layoutTextColor').value=value;
+    node('layoutTextColor').dispatch('input',{target:node('layoutTextColor')});
+  };
+  const resetColor=()=>node('layoutColorReset').dispatch('click');
   const grid=enabled=>{
     node('layoutSnapGrid').checked=enabled;
     node('layoutSnapGrid').dispatch('change',{target:node('layoutSnapGrid')});
@@ -102,7 +111,7 @@ function harness(settings={},initialGrid=null){
     item.dispatch('pointermove',{pointerId,clientX:dx,clientY:dy});
     item.dispatch('pointerup',{pointerId});
   };
-  return {node,config,selectPosition,setScale,setMode,save,reset,grid,drag,preference,
+  return {node,config,selectPosition,setScale,setMode,save,reset,font,color,resetColor,grid,drag,preference,
     get saved(){return saved;}};
 }
 
@@ -213,4 +222,50 @@ test('alignment grid exists in admin styling only, not on the TV display',()=>{
   const display=fs.readFileSync(path.join(__dirname,'../web/display.css'),'utf8');
   assert.match(css,/\.layout-stage\.show-grid:after/);
   assert.doesNotMatch(display,/show-grid/);
+});
+
+test('font and text color save independently for each OSD block and alternate position',async()=>{
+  const ui=harness();
+  ui.font('georgia');
+  ui.color('#ffaa00');
+  assert.equal(ui.node('layoutFont').value,'georgia');
+  assert.equal(ui.node('layoutTextColor').value,'#ffaa00');
+  assert.equal(ui.node('layoutColorValue').textContent,'#ffaa00');
+  ui.node('layoutBlock').dispatch('change',{target:{value:'weather'}});
+  ui.font('courier');
+  ui.color('#bbccdd');
+
+  ui.selectPosition(1);
+  ui.font('arial');
+  ui.color('#123456');
+  await ui.save();
+  assert.equal(ui.saved.osd_layout.clock.font,'georgia');
+  assert.equal(ui.saved.osd_layout.clock.color,'#ffaa00');
+  assert.equal(ui.saved.osd_layout.weather.font,'courier');
+  assert.equal(ui.saved.osd_layout.weather.color,'#bbccdd');
+  assert.equal(ui.saved.osd_layout_alt.weather.font,'arial');
+  assert.equal(ui.saved.osd_layout_alt.weather.color,'#123456');
+  assert.equal(ui.saved.osd_layout_alt.clock.font,undefined);
+
+  ui.selectPosition(0);
+  assert.equal(ui.node('layoutFont').value,'courier');
+  assert.equal(ui.node('layoutTextColor').value,'#bbccdd');
+  ui.resetColor();
+  ui.font('default');
+  await ui.save();
+  assert.equal(ui.saved.osd_layout.weather.font,undefined);
+  assert.equal(ui.saved.osd_layout.weather.color,undefined);
+  assert.equal(ui.saved.osd_layout.clock.color,'#ffaa00');
+  assert.equal(ui.saved.osd_layout_alt.weather.color,'#123456');
+});
+
+test('new typography controls have defaults and reject invalid colors',async()=>{
+  const ui=harness();
+  assert.equal(ui.node('layoutFont').value,'default');
+  assert.equal(ui.node('layoutTextColor').value,'#ffffff');
+  assert.equal(ui.node('layoutColorReset').disabled,true);
+  ui.color('rgb(255,0,0)');
+  ui.font('invalid-system-command');
+  await ui.save();
+  assert.deepEqual(ui.saved.osd_layout,{});
 });
