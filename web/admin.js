@@ -11,12 +11,59 @@ function renderConfig(){const f=$('settingsForm'),c=status.config;for(const [key
 function updateNightValue(){$('nightValue').textContent=$('settingsForm').elements.night_opacity.value+'%'}
 function textNode(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e;}
 function line(name,desc){const row=document.createElement('div');row.className='line';const t=document.createElement('div');t.append(textNode('strong',name),textNode('small',desc));row.append(t);return row;}
-function renderVideos(){const list=$('videoList');list.replaceChildren();for(const v of status.videos){const row=line(v.name,bytes(v.bytes));const controls=document.createElement('div');controls.className='inline-actions';const remove=textNode('button','Удалить');remove.addEventListener('click',async()=>{if(!confirm('Удалить видео с карты памяти?'))return;try{await api('/api/admin/videos/'+encodeURIComponent(v.name),{method:'DELETE'});await load();toast('Видео удалено')}catch(e){toast(e.message)}});controls.append(remove);row.append(controls);list.append(row);}}
+function renderVideos(){
+  const list=$('videoList');list.replaceChildren();
+  for(const v of status.videos){
+    const row=line(v.name,bytes(v.bytes)+' · готов к воспроизведению');
+    const controls=document.createElement('div');controls.className='inline-actions';
+    const remove=textNode('button','Удалить');
+    remove.addEventListener('click',async()=>{
+      if(!confirm('Удалить готовое видео с карты памяти?'))return;
+      try{
+        await api('/api/admin/videos/'+encodeURIComponent(v.name),{method:'DELETE'});
+        await load();toast('Видео удалено');
+      }catch(e){toast(e.message)}
+    });
+    controls.append(remove);row.append(controls);list.append(row);
+  }
+  const labels={queued:'В очереди',running:'Фоновая конвертация',failed:'Не удалось обработать'};
+  for(const job of status.video_processing||[]){
+    const description=(labels[job.state]||job.state)+
+      (job.error?' · '+job.error:'')+
+      (job.origin==='videos'?' · ранее загруженный файл':'');
+    const row=line(job.name,description);
+    const controls=document.createElement('div');controls.className='inline-actions';
+    if(job.state==='failed'){
+      const retry=textNode('button','Повторить');
+      retry.addEventListener('click',async()=>{
+        retry.disabled=true;
+        try{
+          await api('/api/admin/videos/jobs/'+job.id+'/retry',{method:'POST'});
+          await load();toast('Файл снова в очереди');
+        }catch(e){toast(e.message);retry.disabled=false}
+      });
+      controls.append(retry);
+    }
+    if(job.state!=='running'){
+      const remove=textNode('button','Удалить исходник');
+      remove.addEventListener('click',async()=>{
+        if(!confirm('Удалить исходное видео с карты памяти?'))return;
+        try{
+          await api('/api/admin/videos/jobs/'+job.id,{method:'DELETE'});
+          await load();toast('Исходный файл удалён');
+        }catch(e){toast(e.message)}
+      });
+      controls.append(remove);
+    }
+    row.append(controls);list.append(row);
+  }
+  if(!list.children.length)list.append(textNode('p','Загруженных файлов пока нет'));
+}
 function renderOnlineSources(){
   const root=$('onlineSourceList');root.replaceChildren();
 
   const localRow=line('Загруженные файлы',
-    `${status.videos.length} роликов · файлы на microSD, не онлайн-кеш`);
+    `${status.videos.length} готово · ${(status.video_processing||[]).length} в очереди/обработке · не онлайн-кеш`);
   const localLabel=document.createElement('label');
   const localCheck=document.createElement('input');localCheck.type='checkbox';
   localCheck.checked=status.config.local_videos_enabled!==false;
@@ -125,3 +172,9 @@ $('githubModulesCheck').addEventListener('click',async()=>{
     }
   }catch(e){target.replaceChildren(textNode('p',e.message));toast(e.message)}
 });
+
+setInterval(()=>{
+  if(!$('panel').hidden && document.querySelector('.tab.active')?.dataset.tab==='videos'){
+    load().catch(err=>console.warn('Не удалось обновить статус видео:',err));
+  }
+},10000);
