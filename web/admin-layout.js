@@ -8,7 +8,7 @@ const PiLayoutEditor=(()=>{
   const fallbacks={clock:[6,10],weather:[6,36],calendar:[74,10],footer:[5,92]};
   const items={};
   let started=false,ready=false,drafts=[{},{}],mode='alternate',position=0,selected='clock',drag=null,services=null;
-  let gridEnabled=true;
+  let gridEnabled=true,fontsLoaded=false;
   const active=()=>drafts[position];
   const node=id=>document.getElementById(id);
   const round=n=>Math.round(n*100)/100;
@@ -58,6 +58,57 @@ const PiLayoutEditor=(()=>{
     const nearest=Math.round(clamp(value,0,maximum)/step);
     const last=Math.floor((maximum+1e-8)/step);
     return round(Math.min(nearest,last)*step);
+  }
+  function savedFontSelections(){
+    const families=new Set();
+    for(const draft of drafts){
+      for(const data of Object.values(draft)){
+        if(typeof data?.font==='string'&&data.font.startsWith('installed:')){
+          families.add(data.font.slice('installed:'.length));
+        }
+      }
+    }
+    return families;
+  }
+  function fontOption(value,label,unavailable=false){
+    const option=document.createElement('option');
+    option.value=value;
+    option.textContent=label;
+    option.disabled=unavailable;
+    // A removed font stays visible as the saved selection. Don't force a
+    // replacement, as the font might be reinstalled after a system update.
+    return option;
+  }
+  async function refreshInstalledFonts(){
+    const button=node('layoutFontsRefresh');
+    const status=node('layoutFontsStatus');
+    button.disabled=true;
+    status.textContent=translate('Читаю шрифты с Raspberry Pi…');
+    try{
+      const response=await services.api('/api/admin/osd/fonts');
+      const families=Array.isArray(response.fonts)?response.fonts:[];
+      const seen=new Set();
+      const options=[];
+      for(const family of families){
+        if(typeof family!=='string'||!family.trim()||family.length>160||seen.has(family))continue;
+        seen.add(family);
+        options.push(fontOption('installed:'+family,family));
+      }
+      for(const family of savedFontSelections()){
+        if(!seen.has(family))options.push(fontOption('installed:'+family,
+          family+' ('+translate('не установлен')+')'));
+      }
+      node('layoutInstalledFonts').replaceChildren(...options);
+      fontsLoaded=true;
+      status.textContent=families.length
+        ?translate('Установленных семейств шрифтов: ')+families.length
+        :translate('Шрифты не найдены. Доступны прежние варианты.');
+      setSelected(selected);
+    }catch(error){
+      status.textContent=translate('Не удалось получить список шрифтов: ')+error.message;
+    }finally{
+      button.disabled=false;
+    }
   }
   function setSelected(name){
     if(!ids[name])return;
@@ -241,10 +292,13 @@ const PiLayoutEditor=(()=>{
       apply();
     });
     node('layoutBlock').addEventListener('change',e=>setSelected(e.target.value));
+    node('layoutFontsRefresh').addEventListener('click',()=>refreshInstalledFonts());
     node('layoutFont').addEventListener('change',event=>{
       if(!ready)return;
       const font=event.target.value;
-      if(!['default','arial','verdana','trebuchet','georgia','times','courier'].includes(font))return;
+      if(!['default','arial','verdana','trebuchet','georgia','times','courier'].includes(font)
+          && !(font.startsWith('installed:')&&font.length>10
+              && font.length<=170))return;
       if(font==='default'&&!active()[selected]?.font)return;
       ensureGeometry();
       if(font==='default')delete active()[selected].font;
@@ -281,6 +335,7 @@ const PiLayoutEditor=(()=>{
     services=context;
     if(!started)init();
     if(!frame().getAttribute('src'))frame().src='/?layout_preview=1';
+    if(!fontsLoaded)refreshInstalledFonts();
     resizeFrame();
   }};
 })();
