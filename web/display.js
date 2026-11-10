@@ -276,11 +276,9 @@ function applyOsdLayout(layout){
     node.style.transform=geometry?'scale('+geometry.scale+')':'';
   }
 }
-function renderOsdPosition(){
-  const custom=Boolean(state?.settings?.osd_layout&&Object.keys(state.settings.osd_layout).length);
-  const right=osdRight&&!custom;
+function setOsdSideClasses(right){
   const sideClass=right?' osd-right':'';
-  const calendarClass='calendar-card'+(!right&&!custom?' osd-right':'');
+  const calendarClass='calendar-card'+(!right?' osd-right':'');
   if($('calendarCard').className!==calendarClass)$('calendarCard').className=calendarClass;
   for(const [id,base] of [['clockCard','clock-card'],['weatherCard','weather-card']]){
     const name=base+sideClass;
@@ -288,7 +286,21 @@ function renderOsdPosition(){
   }
   const footerClass='footer'+sideClass;
   if($('clipFooter').className!==footerClass)$('clipFooter').className=footerClass;
-  applyOsdLayout(state?.settings?.osd_layout);
+}
+// The editor uses this to preview either of the original side presets without
+// modifying persisted settings or starting another video player.
+function previewOsdPreset(index){
+  if(!layoutPreview)return;
+  setOsdSideClasses(index===1);
+  applyOsdLayout({});
+}
+function renderOsdPosition(){
+  const settings=state?.settings||{};
+  const second=settings.osd_layout_mode!=='single'&&osdRight;
+  const layout=(second?settings.osd_layout_alt:settings.osd_layout)||{};
+  const custom=Boolean(Object.keys(layout).length);
+  setOsdSideClasses(second&&!custom);
+  applyOsdLayout(layout);
 }
 async function poll(){
   try{
