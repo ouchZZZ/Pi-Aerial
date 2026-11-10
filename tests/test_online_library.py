@@ -166,3 +166,13 @@ def test_one_shot_accepts_both_ready_sources(library, tmp_path, monkeypatch):
     assert screen.get(request["url"]).status_code == 404
     assert admin.post(f"{command}/local/{local.name}", headers=csrf).status_code == 200
     assert screen.get(poll).json()["id"] != token
+
+
+def test_public_release_has_attribution_but_no_download_button():
+    from pathlib import Path
+    web = Path(__file__).parents[1] / 'web'
+    assert 'libraryPreviewDownload' not in (web / 'admin.html').read_text()
+    assert 'libraryPreviewDownload' not in (web / 'admin.js').read_text()
+    screen = (web / 'display.html').read_text()
+    assert 'https://open-meteo.com/' in screen
+    assert 'https://creativecommons.org/licenses/by/4.0/' in screen
