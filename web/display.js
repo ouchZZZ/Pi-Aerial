@@ -81,6 +81,27 @@ function drawTime(){
   const night=c.night_mode&&(c.night_start<=c.night_end?(hour>=c.night_start&&hour<c.night_end):(hour>=c.night_start||hour<c.night_end));
   setStyle('nightShade','opacity',night?String(1-c.night_opacity):'0');
 }
+const forecastWeekday=new Intl.DateTimeFormat('ru-RU',{timeZone:'UTC',weekday:'short'});
+const windSpeed=new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1});
+let forecastMarkup='';
+function showForecast(weather, settings){
+  const today=new Intl.DateTimeFormat('sv-SE',{timeZone:settings.timezone}).format(new Date());
+  const days=settings.show_weather&&weather.available
+    ? (weather.forecast||[]).filter(day=>day.date>today&&Number.isFinite(day.min)&&Number.isFinite(day.max)).slice(0,7)
+    : [];
+  const markup=days.map(day=>{
+    const date=new Date(day.date+'T00:00:00Z');
+    const label=forecastWeekday.format(date);
+    const icon=iconFor(day.code,true);
+    const condition=wxText[day.code]||'Погода';
+    return '<div class="forecast-day"><span>'+label+'</span><span class="forecast-icon" role="img" aria-label="'+condition+'">'+icon+'</span><span>'+Math.round(day.max)+'°</span><span class="forecast-low">'+Math.round(day.min)+'°</span></div>';
+  }).join('');
+  if(markup!==forecastMarkup){
+    $('forecast').innerHTML=markup;
+    forecastMarkup=markup;
+  }
+  setHidden('forecast',!markup);
+}
 function showWeather(){
   if(!state)return;
   const w=state.weather,c=state.settings;
@@ -89,6 +110,7 @@ function showWeather(){
   setHidden('clockCard',!c.show_clock&&!c.show_weather);
   setHidden('city',!c.show_weather);
   setHidden('weather',!c.show_weather);
+  showForecast(w,c);
   if(!c.show_weather)return;
   if(!w.available){
     setText('wxTemp','Погода недоступна');
@@ -98,7 +120,7 @@ function showWeather(){
   }
   setText('wxIcon',iconFor(Number(w.code),w.is_day));
   setText('wxTemp',Math.round(w.temperature)+'°C · '+(wxText[w.code]||'Погода'));
-  setText('wxDetail','Ощущается '+Math.round(w.apparent)+'° · ветер '+Math.round(w.wind)+' км/ч'+(w.stale?' · данные '+w.age_minutes+' мин. назад':''));
+  setText('wxDetail','Ощущается '+Math.round(w.apparent)+'° · ветер '+windSpeed.format(w.wind/3.6)+' м/с'+(w.stale?' · данные '+w.age_minutes+' мин. назад':''));
 }
 function listChanged(list){return list.map(x=>x.id||x.url).join('|')!==videos.map(x=>x.id||x.url).join('|');}
 

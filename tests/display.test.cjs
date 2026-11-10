@@ -184,3 +184,23 @@ test('calendar shows leading dates, holidays and transferred days off', async ()
   assert.match(grid, /class="previous-month">26<\/span>.*class="previous-month">30<\/span><span class="holiday">1</);
   assert.match(grid, /class="weekend" aria-current="date">3</);
 });
+
+test('weekly forecast skips today and follows the weather switch', async () => {
+  const h = await ready();
+  vm.runInContext("Date = class extends Date { constructor(...args) { super(...(args.length ? args : ['2027-01-01T12:00:00Z'])); } }", h.context);
+  h.publicState.weather = {
+    available: true, temperature: 1, apparent: 0, code: 0, wind: 18, is_day: true,
+    forecast: Array.from({length: 9}, (_, i) => ({
+      date: '2027-01-0' + (i + 1), min: -i, max: i, code: 0,
+    })),
+  };
+  await h.context.poll();
+  const forecast = h.elements.get('forecast');
+  assert.equal(forecast.hidden, false);
+  assert.equal((forecast.innerHTML.match(/class="forecast-day"/g) || []).length, 7);
+  assert.doesNotMatch(forecast.innerHTML, />0°</);
+  assert.match(h.elements.get('wxDetail').textContent, /5 м\/с/);
+  h.publicState.settings.show_weather = false;
+  await h.context.poll();
+  assert.equal(forecast.hidden, true);
+});
