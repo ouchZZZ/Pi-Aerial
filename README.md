@@ -4,6 +4,9 @@
 
 *Ambient video clock & screensaver for Raspberry Pi 4.*
 
+> **Разработка / Development:** весь исходный код Pi Aerial написан **ChatGPT (OpenAI)** по заданиям и под руководством автора проекта **ouchZZZ**.  
+> **All source code was written by ChatGPT (OpenAI)**, based on the requirements and direction of project creator **ouchZZZ**.
+
 [![Tests](https://github.com/ouchZZZ/Pi-Aerial/actions/workflows/tests.yml/badge.svg)](https://github.com/ouchZZZ/Pi-Aerial/actions/workflows/tests.yml) · [MIT License](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 ## Возможности
