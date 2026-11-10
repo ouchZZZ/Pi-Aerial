@@ -14,6 +14,25 @@ function line(name,desc){const row=document.createElement('div');row.className='
 function renderVideos(){const list=$('videoList');list.replaceChildren();for(const v of status.videos){const row=line(v.name,bytes(v.bytes));const controls=document.createElement('div');controls.className='inline-actions';const remove=textNode('button','Удалить');remove.addEventListener('click',async()=>{if(!confirm('Удалить видео с карты памяти?'))return;try{await api('/api/admin/videos/'+encodeURIComponent(v.name),{method:'DELETE'});await load();toast('Видео удалено')}catch(e){toast(e.message)}});controls.append(remove);row.append(controls);list.append(row);}}
 function renderOnlineSources(){
   const root=$('onlineSourceList');root.replaceChildren();
+
+  const localRow=line('Загруженные файлы',
+    `${status.videos.length} роликов · файлы на microSD, не онлайн-кеш`);
+  const localLabel=document.createElement('label');
+  const localCheck=document.createElement('input');localCheck.type='checkbox';
+  localCheck.checked=status.config.local_videos_enabled!==false;
+  localCheck.title='Показывать загруженные через веб-интерфейс видео';
+  localCheck.addEventListener('change',async()=>{
+    const enabled=localCheck.checked;localCheck.disabled=true;
+    try{
+      await api('/api/admin/config',{method:'PUT',
+        body:{changes:{local_videos_enabled:enabled}}});
+      await load();toast(enabled?'Локальные видео включены':'Локальные видео отключены из показа');
+    }catch(e){localCheck.checked=!enabled;toast(e.message)}
+    finally{localCheck.disabled=false}
+  });
+  localLabel.append(localCheck,document.createTextNode(' Включён'));
+  localRow.append(localLabel);root.append(localRow);
+
   const config=status.config.online_sources||{};
   for(const source of status.online_sources||[]){
     const msg=source.requires_key&&!source.ready?'Нужен API-ключ':(source.error||'Каталог готов');
