@@ -321,7 +321,7 @@ def test_mov_not_advertised_until_real_mp4_cache_ready(monkeypatch, tmp_path):
     assert online.list_clips() == []
     from pathlib import Path
     (online.CACHE_FOLDER / (clip["id"] + ".mp4")).write_bytes(
-        b"\\x00\\x00\\x00\\x18ftypisom" + b"0" * 1500
+        bytes.fromhex("000000186674797069736f6d") + b"0" * 1500
     )
     clips = online.list_clips()
     assert len(clips) == 1 and clips[0]["cached"] is True
@@ -362,7 +362,7 @@ def test_uncached_mov_is_never_streamed_as_mp4(monkeypatch):
                         lambda *args: fetched.append(True))
     monkeypatch.setattr(online, "try_cache",
                         lambda entry: None)
-    with TestClient(main.app) as client:
-        response = client.get("/media/online/" + entry["id"])
-        assert response.status_code == 503
-        assert not fetched
+    client = TestClient(main.app)
+    response = client.get("/media/online/" + entry["id"])
+    assert response.status_code == 503
+    assert not fetched
