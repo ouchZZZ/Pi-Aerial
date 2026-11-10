@@ -1,16 +1,19 @@
-"""Online video catalogs and bounded, opportunistic on-disk cache.
+"""Online video catalogs, sequential preparation and persistent processed history.
 
-The display plays sources online. Completed copies of clips that were actually
-played can be reused from microSD. No background bulk download is performed.
+Apple videos are downloaded one at a time, transcoded for Raspberry Pi playback,
+and never downloaded again after successful preparation, even if the cache evicts
+the finished file.
 """
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import ssl
+import tarfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,29 +28,23 @@ from .storage import DATA, atomic_json, read_json, settings
 from .video_conversion import normalize_video
 from . import video_progress
 
-SOURCE_NAMES = {
-    "apple": "Apple Aerial",
-    "nasa": "NASA",
-    "pixabay": "Pixabay",
-    "pexels": "Pexels",
-}
+SOURCE_NAMES = {"apple": "Apple Aerial", "nasa": "NASA"}
 SOURCE_URLS = {
-    "apple": "https://sylvan.apple.com/Aerials/2x/entries.json",
+    "apple": ("https://sylvan.apple.com/itunes-assets/Aerials126/v4/"
+              "c0/45/d9/c045d9d0-9606-1535-62fe-189edb4f79eb/"
+              "resources-atv-23J-2.tar"),
     "nasa": "https://images-api.nasa.gov/search",
-    "pixabay": "https://pixabay.com/api/videos/",
-    "pexels": "https://api.pexels.com/v1/videos/search",
 }
 CATALOG_FILE = DATA / "online_catalog.json"
+PROCESSED_FILE = DATA / "online_processed.json"
 CACHE_FOLDER = DATA / "online_cache"
 REFRESH_SECONDS = 6 * 3600
-API_REFRESH_SECONDS = 24 * 3600
 MAX_DOWNLOAD = 550 * 1024 * 1024  # a single background cache file
 RESERVE_BYTES = 5 * 1024 ** 3
 LOCK = threading.RLock()
 DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 ACTIVE: set[str] = set()
 CACHE_FAILED_UNTIL: dict[str, float] = {}
-APPLE_WARM_TARGET = 4
 CACHE_PROFILE = "h264-1080p30-8bit-v1"
 
 
@@ -65,8 +62,6 @@ def allowed_video_url(url: str, provider: str) -> bool:
         suffix = {
             "apple": ("apple.com", "mzstatic.com"),
             "nasa": ("nasa.gov",),
-            "pixabay": ("pixabay.com",),
-            "pexels": ("pexels.com",),
         }.get(provider, ())
         return any(host == d or host.endswith("." + d) for d in suffix)
     except (ValueError, AttributeError):
@@ -156,12 +151,6 @@ def _http_json(url: str, *, headers=None, timeout=9) -> dict | list:
     return json.loads(payload)
 
 
-def _key(provider: str) -> str:
-    # Use environment or a private, non-public JSON file; never send keys to /api/public.
-    variable = "PI_AERIAL_" + provider.upper() + "_API_KEY"
-    return (os.getenv(variable) or read_json(DATA / "source_keys.json").get(provider) or "").strip()
-
-
 def requires_remux(entry: dict) -> bool:
     """MOV is a QuickTime container; Chromium must receive real MP4 bytes."""
     return urllib.parse.urlsplit(entry.get("remote_url", "")).path.lower().endswith(".mov")
@@ -173,17 +162,16 @@ def source_status() -> list[dict]:
     out = []
     for provider, label in SOURCE_NAMES.items():
         state = raw.get(provider, {})
-        requires_key = provider in ("pixabay", "pexels")
         out.append({
             "id": provider, "name": label,
             "enabled": bool(cfg["online_sources"].get(provider, False)),
-            "ready": (not requires_key or bool(_key(provider))),
-            "requires_key": requires_key,
+            "ready": True,
+            "requires_key": False,
             "count": len(state.get("items", [])),
             "playable": sum(
                 1 for entry in state.get("items", [])
                 if cached_file(entry.get("id", "")) is not None
-            ) if provider in ("apple", "nasa") else len(state.get("items", [])),
+            ),
             "error": (("Установите ffmpeg: sudo apt install -y ffmpeg"
                        if shutil.which("ffmpeg") is None else None)
                       if provider in ("apple", "nasa")
@@ -204,20 +192,62 @@ def _clip(provider: str, source_id: str, url: str, title: str,
             "page": page if page.startswith("https://") else ""}
 
 
+def _apple_manifest() -> dict | list:
+    """Safely parse Apple's tvOS 26 TAR feed without extracting files to disk."""
+    req = urllib.request.Request(
+        SOURCE_URLS["apple"],
+        headers={"User-Agent": "PiAerial/0.3 (local TV)", "Accept": "*/*"},
+    )
+    with urllib.request.urlopen(req, timeout=20, context=_tls_context()) as response:
+        payload = response.read(12 * 1024 * 1024 + 1)
+    if len(payload) > 12 * 1024 * 1024:
+        raise ValueError("Apple TAR превышает 12 МБ")
+
+    def entries_from_tar(data: bytes, nested: bool = False) -> dict | list:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
+            members = [item for item in archive.getmembers()
+                       if item.isfile() and not item.issym() and not item.islnk()]
+            for member in members:
+                if Path(member.name).name == "entries.json":
+                    if member.size > 4 * 1024 * 1024:
+                        raise ValueError("Apple entries.json слишком большой")
+                    file = archive.extractfile(member)
+                    if file is not None:
+                        return json.load(file)
+            if not nested:
+                for member in members:
+                    if Path(member.name).name == "resources.tar":
+                        if member.size > 10 * 1024 * 1024:
+                            raise ValueError("Apple resources.tar слишком большой")
+                        file = archive.extractfile(member)
+                        if file is not None:
+                            return entries_from_tar(file.read(), nested=True)
+        raise ValueError("Apple TAR не содержит entries.json")
+
+    return entries_from_tar(payload)
+
+
 def _apple() -> list[dict]:
-    raw = _http_json(SOURCE_URLS["apple"])
-    entries = raw if isinstance(raw, list) else (raw.get("assets") or raw.get("entries") or [])
+    raw = _apple_manifest()
+    entries = raw if isinstance(raw, list) else (
+        raw.get("assets") or raw.get("entries") or [])
+    if not isinstance(entries, list):
+        raise ValueError("Неизвестная структура Apple entries.json")
     result = []
+    seen: set[str] = set()
     for e in entries:
         if not isinstance(e, dict):
             continue
         items = [e] + (e.get("assets", []) if isinstance(e.get("assets"), list) else [])
         selected = None
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            # Chromium on Raspberry Pi should never receive HEVC/HDR from this catalog.
-            for key in ("url-1080-H264", "url-1080-h264"):
+        # Prefer 1080p SDR (AVC, then HEVC), only fall back to higher resolution.
+        # Avoid HDR unless no SDR rendition exists.
+        for key in ("url-1080-H264", "url-1080-h264",
+                    "url-1080-SDR", "url-4K-SDR",
+                    "url-1080-HDR", "url-4K-HDR"):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
                 url = item.get(key)
                 if isinstance(url, str) and allowed_video_url(url, "apple"):
                     selected = url
@@ -227,11 +257,16 @@ def _apple() -> list[dict]:
         if not selected:
             continue
         source_id = str(e.get("id") or e.get("name") or selected)
-        title = str(e.get("name") or e.get("accessibilityLabel") or e.get("id") or "Apple Aerial")
-        clip = _clip("apple", source_id, selected, title, "Apple Aerial", "https://www.apple.com/tv/")
+        if source_id in seen:
+            continue
+        seen.add(source_id)
+        title = str(e.get("name") or e.get("accessibilityLabel")
+                    or e.get("id") or "Apple Aerial")
+        clip = _clip("apple", source_id, selected, title,
+                     "Apple Aerial", "https://www.apple.com/tv/")
         if clip:
             result.append(clip)
-    return result[:180]
+    return result[:250]
 
 
 def _nasa_manifest(entry: dict) -> tuple[dict | None, str]:
@@ -308,73 +343,26 @@ def _nasa() -> list[dict]:
     return result[:40]
 
 
-def _pixabay() -> list[dict]:
-    key = _key("pixabay")
-    if not key:
-        raise ValueError("API key не задан")
-    query = urllib.parse.urlencode({"key": key, "q": "aerial nature",
-                                    "video_type": "film", "per_page": 40,
-                                    "safesearch": "true"})
-    data = _http_json(SOURCE_URLS["pixabay"] + "?" + query)
-    output = []
-    for e in data.get("hits", []):
-        rendition = e.get("videos", {}).get("medium", {})
-        url = rendition.get("url")
-        clip = _clip("pixabay", str(e.get("id")), url, "Pixabay · aerial nature",
-                     "Pixabay / " + str(e.get("user") or "contributor"),
-                     str(e.get("pageURL") or "https://pixabay.com/videos/"))
-        if clip:
-            output.append(clip)
-    return output
-
-
-def _pexels() -> list[dict]:
-    key = _key("pexels")
-    if not key:
-        raise ValueError("API key не задан")
-    query = urllib.parse.urlencode({"query": "aerial landscape", "orientation": "landscape",
-                                    "per_page": 40})
-    data = _http_json(SOURCE_URLS["pexels"] + "?" + query,
-                      headers={"Authorization": key})
-    output = []
-    for e in data.get("videos", []):
-        files = [x for x in e.get("video_files", [])
-                 if x.get("file_type") == "video/mp4"
-                 and x.get("width") and x.get("height")]
-        files.sort(key=lambda x: abs(x["width"] - 1920) + abs(x["height"] - 1080))
-        if not files:
-            continue
-        author = e.get("user") or {}
-        clip = _clip("pexels", str(e.get("id")), files[0].get("link"),
-                     "Pexels · aerial", "Pexels / " + str(author.get("name", "contributor")),
-                     str(e.get("url") or "https://www.pexels.com/videos/"))
-        if clip:
-            output.append(clip)
-    return output
-
-
-FETCHERS = {"apple": _apple, "nasa": _nasa, "pixabay": _pixabay, "pexels": _pexels}
+FETCHERS = {"apple": _apple, "nasa": _nasa}
 
 
 def refresh_catalog(force=False) -> None:
     """Never drop last successful entries due to a transient API outage."""
     with LOCK:
         current = read_json(CATALOG_FILE)
-        sources = dict(current.get("sources", {}))
+        sources = {name: state for name, state in current.get("sources", {}).items()
+                   if name in FETCHERS}
     cfg = settings()
     changed = False
     for name, fetch in FETCHERS.items():
         if not cfg["online_sources"].get(name, False):
             continue
         state = dict(sources.get(name, {}))
-        minimum = API_REFRESH_SECONDS if name in ("pixabay", "pexels") else REFRESH_SECONDS
         last_attempt = float(state.get("attempted") or state.get("updated") or 0)
-        # API responses must remain cached at least 24h for Pixabay/Pexels.
-        # Even failures wait for the next permitted attempt; avoid API hammering.
-        # Explicit refresh may retry Apple/NASA after the operator fixes TLS,
-        # but never violates the 24h API-cache policy for Pixabay/Pexels.
-        is_manual_retry = force and name in ("apple", "nasa")
-        if time.time() - last_attempt < (60 if is_manual_retry else minimum):
+        # Force a first refresh when switching from legacy tvOS 11 to tvOS 26.
+        outdated_apple = name == "apple" and state.get("feed") != "tvos26"
+        elapsed = time.time() - last_attempt
+        if elapsed < (60 if force or outdated_apple else REFRESH_SECONDS):
             continue
         attempted = time.time()
         try:
@@ -382,14 +370,15 @@ def refresh_catalog(force=False) -> None:
             if not clips:
                 raise ValueError("Каталог пуст или не содержит подходящих MP4")
             state = {"updated": time.time(), "attempted": attempted,
-                     "items": clips, "error": None}
+                     "items": clips, "error": None,
+                     "feed": "tvos26" if name == "apple" else "nasa"}
         except Exception as exc:
             state["attempted"] = attempted
             state["error"] = str(exc)[:180]
             print(f"[online] {name}: {exc}", flush=True)
         sources[name] = state
         changed = True
-        # Do not wait for slower NASA discovery before starting the first MOV.
+        # Make new Apple assets available to the sequential worker immediately.
         if name in ("apple", "nasa"):
             with LOCK:
                 atomic_json(CATALOG_FILE, {"sources": sources})
@@ -460,6 +449,37 @@ def cached_file(clip_id: str) -> Path | None:
         marker.unlink(missing_ok=True)
     return None
 
+def _processed_ids() -> set[str]:
+    """Journal completed IDs across restarts and cache eviction.
+
+    Import already prepared legacy files before pruning, so existing clips are
+    not downloaded again when a new version starts rotating the cache.
+    """
+    with LOCK:
+        saved = read_json(PROCESSED_FILE).get("ids", [])
+        done = {value for value in saved
+                if isinstance(value, str) and len(value) == 24}
+        for marker in CACHE_FOLDER.glob("*.ready"):
+            if (marker.is_file() and not marker.is_symlink()
+                    and (CACHE_FOLDER / (marker.stem + ".mp4")).is_file()):
+                try:
+                    if marker.read_text(encoding="utf8") == CACHE_PROFILE:
+                        done.add(marker.stem)
+                except OSError:
+                    continue
+        if done != set(saved):
+            atomic_json(PROCESSED_FILE, {"ids": sorted(done)})
+        return done
+
+
+def _mark_processed(ident: str) -> None:
+    with LOCK:
+        done = _processed_ids()
+        if ident not in done:
+            done.add(ident)
+            atomic_json(PROCESSED_FILE, {"ids": sorted(done)})
+
+
 def _prune(max_bytes: int, except_id: str) -> None:
     candidates = sorted((p for p in CACHE_FOLDER.glob("*.mp4") if p.is_file()
                          and not p.is_symlink() and p.name != except_id + ".mp4"),
@@ -528,11 +548,12 @@ def _cache_worker(entry: dict) -> None:
             print(f"[online] preparing {provider}: {ident} "
                   f"({total // 1024 // 1024} МБ исходник)", flush=True)
             mode = normalize_video(
-                temp, muxed,
+                temp, muxed, force_transcode=True,
                 on_progress=lambda **fields: video_progress.conversion(
                     "online", ident, **fields))
             os.replace(muxed, final)
             (CACHE_FOLDER / (ident + ".ready")).write_text(CACHE_PROFILE, encoding="utf8")
+            _mark_processed(ident)
             print(f"[online] ready {provider}: {ident} "
                   f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
             _prune(max_bytes, ident)
@@ -557,6 +578,7 @@ def try_cache(entry: dict) -> None:
     ident = entry["id"]
     with LOCK:
         if (ident in ACTIVE or cached_file(ident) is not None
+                or ident in _processed_ids()
                 or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
             return
         if not DOWNLOAD_SLOT.acquire(blocking=False):
@@ -566,24 +588,27 @@ def try_cache(entry: dict) -> None:
 
 
 def warm_cache() -> None:
-    """Prepare a small number of MOV videos for immediate HTML5 playback."""
+    """Schedule at most one new video; the next starts after full conversion."""
     cfg = settings()
     if not cfg.get("online_cache_enabled", True) or shutil.which("ffmpeg") is None:
         return
     with LOCK:
         catalog = read_json(CATALOG_FILE).get("sources", {})
-    for provider, target in (("apple", APPLE_WARM_TARGET), ("nasa", 2)):
+    done = _processed_ids()
+    for provider in ("apple", "nasa"):
         if not cfg.get("online_sources", {}).get(provider, False):
             continue
         items = catalog.get(provider, {}).get("items", [])
         candidates = [entry for entry in items if isinstance(entry, dict)
                       and allowed_video_url(entry.get("remote_url"), provider)]
-        ready = sum(1 for entry in candidates if cached_file(entry.get("id", "")))
-        if ready >= target:
+        # NASA retains its small warm set; Apple prepares all unique clips one
+        # at a time, with bounded cache and a persistent no-redownload journal.
+        if provider == "nasa" and sum(
+                cached_file(e.get("id", "")) is not None for e in candidates) >= 2:
             continue
         for entry in candidates:
             ident = entry.get("id", "")
-            if not isinstance(ident, str) or len(ident) != 24:
+            if not isinstance(ident, str) or len(ident) != 24 or ident in done:
                 continue
             if cached_file(ident) or CACHE_FAILED_UNTIL.get(ident, 0) > time.time():
                 continue

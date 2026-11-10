@@ -47,7 +47,6 @@ async def lifespan(_: FastAPI):
 def _online_loop(stop: threading.Event):
     while not stop.is_set():
         try:
-            online.warm_cache()
             online.refresh_catalog()
             online.warm_cache()
         except Exception as exc:
@@ -203,7 +202,7 @@ def online_clear_cache(_: None = Depends(auth.require_admin)):
 
 @app.post('/api/admin/online/refresh')
 async def online_refresh(_: None = Depends(auth.require_admin)):
-    # Only Apple and NASA may be retried early; commercial APIs retain 24h TTL.
+    # Retry Apple and NASA (with a one-minute minimum between requests).
     await asyncio.to_thread(online.refresh_catalog, True)
     return {'ok': True, 'sources': online.source_status()}
 
