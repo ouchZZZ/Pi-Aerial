@@ -52,3 +52,6 @@
 .layout-item-resize:after{content:'↘';position:absolute;inset:0;text-align:center;line-height:18px;color:#102d3b;font-size:13px}
 .layout-item[aria-disabled="true"]{display:none}
 @media(max-width:750px){.layout-editor{padding:12px}.layout-item-label{font-size:10px;top:-19px;line-height:16px}.layout-item-resize{width:18px;height:18px}}
+
+#layoutPositionField[hidden]{display:none}
+.layout-controls select{min-width:180px}
