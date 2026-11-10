@@ -295,6 +295,7 @@ test('English UI localizes Moscow, date, weekly forecast and weather details', a
   };
   await h.context.poll();
   assert.equal(h.elements.get('city').textContent, 'Moscow');
+  assert.equal(h.elements.get('weatherCredit').textContent, 'Weather: Open-Meteo');
   assert.match(h.elements.get('wxTemp').textContent, /Clear/);
   assert.match(h.elements.get('wxDetail').textContent, /Feels like 17°/);
   assert.match(h.elements.get('wxDetail').textContent, /5 m\/s/);
@@ -304,6 +305,7 @@ test('English UI localizes Moscow, date, weekly forecast and weather details', a
   h.publicState.settings.language = 'ru';
   await h.context.poll();
   assert.equal(h.elements.get('city').textContent, 'Москва');
+  assert.equal(h.elements.get('weatherCredit').textContent, 'Погода: Open-Meteo');
   assert.match(h.elements.get('wxTemp').textContent, /Ясно/);
   assert.match(h.elements.get('wxDetail').textContent, /Ощущается/);
   assert.match(h.elements.get('monthGrid').innerHTML, /Пн/);
