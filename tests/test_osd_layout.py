@@ -18,7 +18,18 @@ def test_custom_osd_layout_roundtrip(monkeypatch, tmp_path):
     }
     updated = storage.update_settings({'osd_layout': blocks})
     assert updated['osd_layout'] == blocks
+    assert updated['osd_layout_mode'] == 'alternate'  # Current default behavior.
     assert storage.settings()['osd_layout'] == blocks
+    updated = storage.update_settings({
+        'osd_layout_mode': 'single', 'osd_layout_alt': {
+            name: {**geometry, 'x': 100-geometry['x']}
+            for name, geometry in blocks.items()
+        }
+    })
+    assert updated['osd_layout_mode'] == 'single'
+    assert updated['osd_layout_alt']['clock']['x'] == 94
+    assert updated['osd_layout']['clock']['x'] == 6
+    assert storage.update_settings({'osd_layout_mode': 'alternate'})['osd_layout_alt']['clock']['x'] == 94
     assert storage.update_settings({'osd_layout': {}})['osd_layout'] == {}
     assert storage.settings()['osd_layout'] == {}
 
@@ -40,3 +51,19 @@ def test_rejects_bad_osd_layout(monkeypatch, tmp_path, bad):
     monkeypatch.setattr(storage, 'DATA', tmp_path)
     with pytest.raises(ValueError):
         storage.update_settings({'osd_layout': bad})
+
+
+@pytest.mark.parametrize('bad_mode', [None, '', 'random', True, 2, {}, []])
+def test_rejects_bad_osd_mode(monkeypatch, tmp_path, bad_mode):
+    monkeypatch.setattr(storage, 'DATA', tmp_path)
+    with pytest.raises(ValueError, match='Неверный режим'):
+        storage.update_settings({'osd_layout_mode': bad_mode})
+
+
+def test_alternate_layout_is_validated_independently(monkeypatch, tmp_path):
+    monkeypatch.setattr(storage, 'DATA', tmp_path)
+    storage.update_settings({'osd_layout_mode': 'alternate', 'osd_layout': {}})
+    bad = {'clock': {'x': 15, 'y': 15, 'scale': 1}}
+    with pytest.raises(ValueError, match='Неверный набор блоков'):
+        storage.update_settings({'osd_layout_alt': bad})
+    assert storage.settings()['osd_layout_alt'] == {}
