@@ -440,7 +440,6 @@ def cached_file(clip_id: str) -> Path | None:
         if header[8:12] == b"qt  ":
             path.unlink(missing_ok=True)
             return None
-        path.touch()
         return path
     return None
 
