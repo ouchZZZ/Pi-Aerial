@@ -1,8 +1,7 @@
-"""Online video catalogs, sequential preparation and persistent processed history.
+"""Online catalogs, sequential preparation and durable processed history.
 
-Apple videos are downloaded one at a time, transcoded for Raspberry Pi playback,
-and never downloaded again after successful preparation, even if the cache evicts
-the finished file.
+Apple videos are downloaded one at a time and transcoded for Raspberry Pi.
+At the configured cache limit the worker pauses without evicting ready videos.
 """
 from __future__ import annotations
 
@@ -24,7 +23,7 @@ from pathlib import Path
 
 import certifi
 
-from .storage import DATA, atomic_json, read_json, settings
+from .storage import DATA, atomic_json, read_json, settings, max_online_cache_gb
 from .video_conversion import normalize_video
 from . import video_progress
 
@@ -480,19 +479,41 @@ def _mark_processed(ident: str) -> None:
             atomic_json(PROCESSED_FILE, {"ids": sorted(done)})
 
 
-def _prune(max_bytes: int, except_id: str) -> None:
-    candidates = sorted((p for p in CACHE_FOLDER.glob("*.mp4") if p.is_file()
-                         and not p.is_symlink() and p.name != except_id + ".mp4"),
-                        key=lambda p: p.stat().st_mtime)
-    total = sum(p.stat().st_size for p in CACHE_FOLDER.glob("*.mp4")
-                if p.is_file() and not p.is_symlink())
-    for file in candidates:
-        if total <= max_bytes:
-            return
-        size = file.stat().st_size
-        file.unlink(missing_ok=True)
-        file.with_suffix(".ready").unlink(missing_ok=True)
-        total -= size
+def _cache_used_bytes() -> int:
+    """Only completed online MP4 files count toward the configured budget."""
+    try:
+        return sum(
+            path.stat().st_size for path in CACHE_FOLDER.glob("*.mp4")
+            if path.is_file() and not path.is_symlink()
+            and not path.name.endswith(".mux.mp4")
+        )
+    except OSError:
+        # A transient storage error must not trigger a destructive cleanup.
+        return 0
+
+
+def cache_status() -> dict:
+    """Report safe download admission, excluding temporary converter files."""
+    cfg = settings()
+    limit = int(cfg.get("online_cache_gb", 12)) * 1024 ** 3
+    used = _cache_used_bytes()
+    free = None
+    try:
+        free = shutil.disk_usage(CACHE_FOLDER if CACHE_FOLDER.is_dir() else DATA).free
+    except OSError:
+        pass
+    # Reserve the maximum possible finished MP4; no completed file is deleted.
+    limit_paused = used + MAX_DOWNLOAD > limit
+    # Download + transcode temporarily coexist, so keep an extra safety margin.
+    disk_paused = free is None or free < RESERVE_BYTES + 2 * MAX_DOWNLOAD
+    return {
+        "used_bytes": used,
+        "limit_bytes": limit,
+        "free_bytes": free,
+        "max_limit_gb": max_online_cache_gb(),
+        "paused": limit_paused or disk_paused,
+        "pause_reason": "limit" if limit_paused else ("disk" if disk_paused else None),
+    }
 
 
 def _cache_worker(entry: dict) -> None:
@@ -503,7 +524,7 @@ def _cache_worker(entry: dict) -> None:
             return
         max_bytes = int(cfg.get("online_cache_gb", 12)) * 1024**3
         CACHE_FOLDER.mkdir(parents=True, exist_ok=True)
-        if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + 100 * 1024**2:
+        if cache_status()["paused"]:
             return
         temp = CACHE_FOLDER / (ident + ".part")
         muxed = CACHE_FOLDER / (ident + ".mux.mp4")
@@ -551,12 +572,15 @@ def _cache_worker(entry: dict) -> None:
                 temp, muxed, force_transcode=True,
                 on_progress=lambda **fields: video_progress.conversion(
                     "online", ident, **fields))
+            # Other files may be added while we convert. Discard only this
+            # new output if it no longer fits: never evict existing MP4.
+            if _cache_used_bytes() + muxed.stat().st_size > max_bytes:
+                raise ValueError("Кеш заполнен во время подготовки нового видео")
             os.replace(muxed, final)
             (CACHE_FOLDER / (ident + ".ready")).write_text(CACHE_PROFILE, encoding="utf8")
             _mark_processed(ident)
             print(f"[online] ready {provider}: {ident} "
                   f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
-            _prune(max_bytes, ident)
             video_progress.finish("online", ident, True)
         finally:
             temp.unlink(missing_ok=True)
@@ -573,7 +597,7 @@ def _cache_worker(entry: dict) -> None:
 
 
 def try_cache(entry: dict) -> None:
-    if not settings().get("online_cache_enabled", True):
+    if not settings().get("online_cache_enabled", True) or cache_status()["paused"]:
         return
     ident = entry["id"]
     with LOCK:
@@ -590,7 +614,9 @@ def try_cache(entry: dict) -> None:
 def warm_cache() -> None:
     """Schedule at most one new video; the next starts after full conversion."""
     cfg = settings()
-    if not cfg.get("online_cache_enabled", True) or shutil.which("ffmpeg") is None:
+    if (not cfg.get("online_cache_enabled", True)
+            or shutil.which("ffmpeg") is None
+            or cache_status()["paused"]):
         return
     with LOCK:
         catalog = read_json(CATALOG_FILE).get("sources", {})
