@@ -67,3 +67,40 @@ def test_alternate_layout_is_validated_independently(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match='Неверный набор блоков'):
         storage.update_settings({'osd_layout_alt': bad})
     assert storage.settings()['osd_layout_alt'] == {}
+
+
+def test_font_and_color_persist_per_block_and_per_position(monkeypatch, tmp_path):
+    monkeypatch.setattr(storage, 'DATA', tmp_path)
+    blocks = ('clock', 'weather', 'calendar', 'footer')
+    first = {name: {'x': 10, 'y': 20, 'scale': 1} for name in blocks}
+    second = {name: {'x': 25, 'y': 30, 'scale': 1.2} for name in blocks}
+    first['clock'].update(font='georgia', color='#AaBbCC')
+    first['weather']['font'] = 'courier'
+    second['clock'].update(font='arial', color='#102030')
+    second['footer']['color'] = '#998877'
+    updated = storage.update_settings({
+        'osd_layout': first, 'osd_layout_alt': second,
+        'osd_layout_mode': 'alternate'
+    })
+    assert updated['osd_layout']['clock']['color'] == '#AaBbCC'
+    assert updated['osd_layout_alt']['clock']['color'] == '#102030'
+    assert storage.settings()['osd_layout']['weather']['font'] == 'courier'
+    assert 'color' not in storage.settings()['osd_layout']['calendar']
+
+
+@pytest.mark.parametrize(('key', 'bad_value'), [
+    ('font', 'Comic Sans; background:url(https://example.com)'),
+    ('font', 'custom'), ('font', None), ('font', True),
+    ('font', []), ('color', 'red'), ('color', '#fff'),
+    ('color', '#12345678'), ('color', '#00000g'),
+    ('color', 'url(javascript:alert(1))'),
+    ('color', None), ('color', False)
+])
+def test_invalid_font_or_color_is_rejected(monkeypatch, tmp_path, key, bad_value):
+    monkeypatch.setattr(storage, 'DATA', tmp_path)
+    layout = {name: {'x': 12, 'y': 15, 'scale': 1} for name in
+              ('clock', 'weather', 'calendar', 'footer')}
+    layout['clock'][key] = bad_value
+    with pytest.raises(ValueError):
+        storage.update_settings({'osd_layout': layout})
+    assert storage.settings()['osd_layout'] == {}
