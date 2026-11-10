@@ -158,6 +158,11 @@ def _key(provider: str) -> str:
     return (os.getenv(variable) or read_json(DATA / "source_keys.json").get(provider) or "").strip()
 
 
+def requires_remux(entry: dict) -> bool:
+    """MOV is a QuickTime container; Chromium must receive real MP4 bytes."""
+    return urllib.parse.urlsplit(entry.get("remote_url", "")).path.lower().endswith(".mov")
+
+
 def source_status() -> list[dict]:
     cfg = settings()
     raw = read_json(CATALOG_FILE).get("sources", {})
@@ -173,8 +178,8 @@ def source_status() -> list[dict]:
             "count": len(state.get("items", [])),
             "playable": sum(
                 1 for entry in state.get("items", [])
-                if cached_file(entry.get("id", "")) is not None
-            ) if provider == "apple" else len(state.get("items", [])),
+                if not requires_remux(entry) or cached_file(entry.get("id", "")) is not None
+            ),
             "error": (("Установите ffmpeg: sudo apt install -y ffmpeg"
                        if shutil.which("ffmpeg") is None else None)
                       if provider == "apple" and cfg["online_sources"].get("apple")
@@ -380,7 +385,7 @@ def refresh_catalog(force=False) -> None:
         sources[name] = state
         changed = True
         # Do not wait for slower NASA discovery before starting the first MOV.
-        if name == "apple":
+        if name in ("apple", "nasa"):
             with LOCK:
                 atomic_json(CATALOG_FILE, {"sources": sources})
             warm_cache()
@@ -404,9 +409,8 @@ def list_clips() -> list[dict]:
             if not isinstance(item_id, str) or len(item_id) != 24:
                 continue
             cached = cached_file(item_id) is not None
-            # QuickTime is not HTML5 MP4: only advertise a remuxed and fully
-            # cached file to Chromium. Original MOV bytes are never served as MP4.
-            if provider == "apple" and not cached:
+            # Don't advertise unconverted QuickTime bytes as HTML5 MP4.
+            if requires_remux(item) and not cached:
                 continue
             result.append({"id": item_id, "name": item["name"],
                            "url": "/media/online/" + item_id,
@@ -551,33 +555,30 @@ def try_cache(entry: dict) -> None:
 
 
 def warm_cache() -> None:
-    """Maintain a small ready-to-play Apple library, not a bulk mirror.
-
-    One download at a time, with a bounded cache and a retry cooldown.
-    The display only sees verified completed MP4 files.
-    """
+    """Prepare a small number of MOV videos for immediate HTML5 playback."""
     cfg = settings()
-    if not (cfg.get("online_cache_enabled", True)
-            and cfg.get("online_sources", {}).get("apple", False)):
-        return
-    if shutil.which("ffmpeg") is None:
+    if not cfg.get("online_cache_enabled", True) or shutil.which("ffmpeg") is None:
         return
     with LOCK:
         catalog = read_json(CATALOG_FILE).get("sources", {})
-    items = catalog.get("apple", {}).get("items", [])
-    ready = sum(1 for entry in items if cached_file(entry.get("id", "")))
-    if ready >= APPLE_WARM_TARGET:
-        return
-    for entry in items:
-        if not isinstance(entry, dict) or not allowed_video_url(entry.get("remote_url"), "apple"):
+    for provider, target in (("apple", APPLE_WARM_TARGET), ("nasa", 2)):
+        if not cfg.get("online_sources", {}).get(provider, False):
             continue
-        ident = entry.get("id", "")
-        if not isinstance(ident, str) or len(ident) != 24:
+        items = catalog.get(provider, {}).get("items", [])
+        movs = [entry for entry in items if isinstance(entry, dict)
+                and requires_remux(entry)
+                and allowed_video_url(entry.get("remote_url"), provider)]
+        ready = sum(1 for entry in movs if cached_file(entry.get("id", "")))
+        if ready >= target:
             continue
-        if cached_file(ident) or CACHE_FAILED_UNTIL.get(ident, 0) > time.time():
-            continue
-        try_cache(entry)
-        return
+        for entry in movs:
+            ident = entry.get("id", "")
+            if not isinstance(ident, str) or len(ident) != 24:
+                continue
+            if cached_file(ident) or CACHE_FAILED_UNTIL.get(ident, 0) > time.time():
+                continue
+            try_cache(entry)
+            return
 
 
 def clear_cache() -> int:
