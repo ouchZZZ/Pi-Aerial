@@ -5,6 +5,7 @@ let playAttempt=0, failedAttempt=-1, selectedVideo=null;
 let osdRight=false, hasPlayedVideo=false;
 let playingOnce=false, pollingDisplayRequest=false;
 let embeddedPlayer=null, embeddedApiPromise=null, embeddedGeneration=0, embeddedTimer=null, embeddedActive=false;
+let embeddedRequestId=null;
 let vkApiPromise=null;
 let switchTimer=null, frameRequest=null, startupTimer=null, videoPresented=false;
 const FADE_OUT_MS=400;
@@ -198,6 +199,15 @@ function reportPlaybackFailure(attempt,err){
   clearTimeout(changeTimer);
   changeTimer=setTimeout(changeVideo,4000);
 }
+function reportEmbeddedStatus(stage,detail=''){
+  const id=embeddedRequestId;
+  if(!id)return;
+  // Only best-effort diagnostics: reporting must never delay playback.
+  fetch('/api/display/play-once/report',{
+    method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({id,stage,detail:String(detail).slice(0,160)})
+  }).catch(()=>{});
+}
 function stopEmbeddedPlayer(){
   ++embeddedGeneration;
   clearTimeout(embeddedTimer);
@@ -211,6 +221,7 @@ function stopEmbeddedPlayer(){
   layer.innerHTML='<div id="externalPlayer"></div>';
   layer.hidden=true;
   embeddedActive=false;
+  embeddedRequestId=null;
 }
 function loadYouTubeAPI(){
   if(globalThis.YT?.Player)return Promise.resolve(globalThis.YT);
@@ -230,6 +241,7 @@ function loadYouTubeAPI(){
 function embeddedPlaybackFailed(generation,error){
   if(generation!==embeddedGeneration||!embeddedActive)return;
   console.error('Pi Aerial: external playback failed',error);
+  reportEmbeddedStatus('error',error?.message||String(error));
   changeVideo();
 }
 function playEmbedded(request){
@@ -253,10 +265,13 @@ function playEmbedded(request){
   document.body.classList.remove('media-transition');
   $('externalLayer').hidden=false;
   embeddedActive=true;
+  embeddedRequestId=request.id;
+  reportEmbeddedStatus('starting');
   const generation=embeddedGeneration;
   embeddedTimer=setTimeout(()=>embeddedPlaybackFailed(generation,new Error('YouTube startup timed out')),45000);
   loadYouTubeAPI().then(YT=>{
     if(generation!==embeddedGeneration||!playingOnce)return;
+    reportEmbeddedStatus('api_ready');
     embeddedPlayer=new YT.Player('externalPlayer',{
       width:'100%',height:'100%',videoId:request.video_id,
       playerVars:{autoplay:1,playsinline:1,rel:0,origin:location.origin},
@@ -269,9 +284,13 @@ function playEmbedded(request){
         onStateChange:event=>{
           if(generation!==embeddedGeneration||!playingOnce)return;
           if(event.data===YT.PlayerState.PLAYING){
+            reportEmbeddedStatus('playing');
             clearTimeout(embeddedTimer);
             embeddedTimer=null;
-          }else if(event.data===YT.PlayerState.ENDED)changeVideo();
+          }else if(event.data===YT.PlayerState.ENDED){
+            reportEmbeddedStatus('ended');
+            changeVideo();
+          }
         },
         onError:event=>embeddedPlaybackFailed(generation,new Error('YouTube error '+event.data)),
         onAutoplayBlocked:()=>embeddedPlaybackFailed(generation,new Error('YouTube autoplay blocked'))
@@ -328,6 +347,7 @@ function playVKEmbedded(request){
   embeddedTimer=setTimeout(()=>embeddedPlaybackFailed(generation,new Error('VK Video startup timed out')),45000);
   loadVKAPI().then(VK=>{
     if(generation!==embeddedGeneration||!playingOnce)return;
+    reportEmbeddedStatus('api_ready');
     const iframe=document.createElement('iframe');
     iframe.id='externalVKPlayer';
     iframe.title='VK Видео';
@@ -352,13 +372,17 @@ function playVKEmbedded(request){
     });
     const started=()=>{
       if(generation!==embeddedGeneration||!playingOnce)return;
+      reportEmbeddedStatus('playing');
       clearTimeout(embeddedTimer);
       embeddedTimer=null;
     };
     embeddedPlayer.on('started',started);
     embeddedPlayer.on('resumed',started);
     embeddedPlayer.on('ended',()=>{
-      if(generation===embeddedGeneration&&playingOnce)changeVideo();
+      if(generation===embeddedGeneration&&playingOnce){
+        reportEmbeddedStatus('ended');
+        changeVideo();
+      }
     });
     embeddedPlayer.on('error',error=>embeddedPlaybackFailed(generation,
       new Error('VK Video error: '+String(error?.state||'unknown'))));
