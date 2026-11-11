@@ -49,12 +49,22 @@ def switch(target):
 
 
 def service_restart():
-    subprocess.run(['systemctl', '--user', 'restart', 'pi-aerial.service'], check=True, timeout=35)
+    """Queue the restart; the old server may need time to stop media workers.
+
+    A blocking systemctl restart once timed out after 35 seconds on Pi 4,
+    causing a rollback even if systemd was simply still stopping the service.
+    Health verification below is the authoritative completion check.
+    """
+    subprocess.run(
+        ['systemctl', '--user', 'restart', '--no-block', 'pi-aerial.service'],
+        check=True, timeout=10,
+    )
 
 
 def healthy(version, revision=None):
-    for _ in range(45):
-        time.sleep(1)
+    """Wait for the exact release, including systemd stop and start latency."""
+    deadline = time.monotonic() + 150
+    while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=2) as r:
                 response = json.loads(r.read())
@@ -62,6 +72,7 @@ def healthy(version, revision=None):
                 return True
         except Exception:
             pass
+        time.sleep(1)
     return False
 
 
@@ -206,6 +217,11 @@ def main():
             switch(old)
             try:
                 service_restart()
+                old_version = (old / 'VERSION').read_text().strip()
+                old_revision_file = old / 'GIT_REVISION'
+                old_revision = old_revision_file.read_text().strip() if old_revision_file.is_file() else None
+                if not healthy(old_version, old_revision):
+                    raise RuntimeError('Прежняя версия не прошла проверку после отката')
                 save_status(f'Неудачное обновление: восстановлена предыдущая версия ({exc})', False, revision)
             except Exception as restart_exc:
                 save_status(f'Ошибка отката: {restart_exc}', False, revision)
