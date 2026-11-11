@@ -25,7 +25,6 @@ from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, 
                       read_json, safe_id, settings, update_settings)
 
 init_data()
-STOP = threading.Event()
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 LOGIN_ATTEMPTS_LOCK = threading.Lock()
 LOGIN_ATTEMPTS_MAX_IPS = 1000
@@ -37,28 +36,33 @@ DISPLAY_REQUESTS: dict[str, tuple[float, str, str]] = {}
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    STOP.clear()
-    worker = threading.Thread(target=weather.polling_loop, args=(STOP,), daemon=True)
-    worker.start()
-    online_worker = threading.Thread(target=_online_loop, args=(STOP,), daemon=True)
-    online_worker.start()
-    local_video_worker = threading.Thread(target=local_videos.polling_loop, args=(STOP,), daemon=True)
-    local_video_worker.start()
-    update_worker = threading.Thread(target=github_updates.polling_loop, args=(STOP,), daemon=True)
-    update_worker.start()
-    yield
-    STOP.set()
-    worker.join(timeout=1)
-    online_worker.join(timeout=1)
-    local_video_worker.join(timeout=1)
-    update_worker.join(timeout=1)
+    # A fresh event for each lifespan never reactivates prior TestClient workers.
+    stop = threading.Event()
+    workers = [
+        threading.Thread(target=weather.polling_loop, args=(stop,), daemon=True),
+        threading.Thread(target=_online_loop, args=(stop,), daemon=True),
+        threading.Thread(target=local_videos.polling_loop, args=(stop,), daemon=True),
+        threading.Thread(target=github_updates.polling_loop, args=(stop,), daemon=True),
+    ]
+    try:
+        for worker in workers:
+            worker.start()
+        yield
+    finally:
+        stop.set()
+        for worker in workers:
+            if worker.ident is not None:
+                worker.join(timeout=1)
+        # The online scheduler also spawns an independent download worker.
+        online.wait_for_cache_workers(stop)
 
 
 def _online_loop(stop: threading.Event):
     while not stop.is_set():
         try:
-            online.refresh_catalog()
-            online.warm_cache()
+            online.refresh_catalog(stop=stop)
+            if not stop.is_set():
+                online.warm_cache(stop=stop)
         except Exception as exc:
             print(f'[online] refresh failed: {exc}', flush=True)
         if stop.wait(30):

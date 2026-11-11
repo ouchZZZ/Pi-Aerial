@@ -149,9 +149,11 @@ def defer_update(queued):
             previous = json.loads(STATUS.read_text(encoding='utf8'))
         except (FileNotFoundError, ValueError):
             previous = {}
+        # Preserve the provenance of an interrupted automatic update.
+        payload = {key: value for key, value in queued.items() if key != '_automatic'}
         temp.write_text(json.dumps({
-            'payload': queued, 'automatic': False, 'requested_at': time.time(),
-            'previous_status': previous,
+            'payload': payload, 'automatic': queued.get('_automatic') is True,
+            'requested_at': time.time(), 'previous_status': previous,
         }), encoding='utf8')
         os.replace(temp, request)
 
