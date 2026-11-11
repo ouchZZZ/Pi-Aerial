@@ -152,7 +152,8 @@ class PlayURL(BaseModel):
 
 class PlayReport(BaseModel):
     id: str = Field(min_length=8, max_length=128)
-    stage: str = Field(pattern=r'^(starting|api_ready|playing|ended|error)
+    stage: str = Field(pattern=r'\A(starting|api_ready|playing|ended|error)\Z')
+    detail: str = Field(default='', max_length=160)
 
 
 def ready_display_video(source: str, name: str) -> Path:
