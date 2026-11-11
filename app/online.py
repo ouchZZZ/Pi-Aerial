@@ -600,7 +600,7 @@ def cache_status() -> dict:
         "max_limit_gb": max_online_cache_gb(),
         "file_limit_bytes": file_limit,
         "paused": limit_paused or disk_paused,
-        "pause_reason": "limit" if limit_paused else ("disk" if disk_paused else None),
+        "pause_reason": "disk" if disk_paused else ("limit" if limit_paused else None),
     }
 
 

@@ -512,6 +512,20 @@ def test_file_limit_is_half_remaining_quota(monkeypatch, tmp_path):
     assert not status["paused"]
 
 
+def test_file_limit_reserves_disk_for_source_and_output(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    gib = 1024 ** 3
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
+    monkeypatch.setattr(online, "settings", lambda: {"online_cache_gb": 12})
+    monkeypatch.setattr(online, "_cache_used_bytes", lambda: 0)
+    monkeypatch.setattr(online.shutil, "disk_usage",
+                        lambda path: SimpleNamespace(free=online.RESERVE_BYTES + 3 * gib,
+                                                     total=128 * gib))
+    status = online.cache_status()
+    assert status["file_limit_bytes"] == 3 * gib // 2
+    assert not status["paused"]
+
+
 @pytest.mark.parametrize("declared", [True, False])
 def test_worker_enforces_quota_with_or_without_content_length(monkeypatch, tmp_path, declared):
     import io
@@ -558,3 +572,18 @@ def test_apple_keeps_english_library_metadata(monkeypatch):
     assert clip["name_en"] == "Australia"
     assert clip["description_en"] == "Over the ocean"
     assert clip["captions"][0]["text"] == "Над океаном"
+
+
+def test_cancelled_cache_worker_never_starts_network_and_releases_slot(monkeypatch):
+    import threading
+
+    stop = threading.Event()
+    stop.set()
+    slot = threading.BoundedSemaphore(1)
+    assert slot.acquire(blocking=False)
+    entry = {"id": "z" * 24}
+    monkeypatch.setattr(online, "settings",
+                        lambda: pytest.fail("Stopped worker attempted preparation"))
+    online._cache_worker(entry, slot, stop)
+    assert slot.acquire(blocking=False)
+    assert entry["id"] not in online.ACTIVE

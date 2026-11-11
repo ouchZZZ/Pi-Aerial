@@ -225,3 +225,36 @@ def test_local_source_toggle_preserves_uploaded_files(monkeypatch):
         update_settings({'local_videos_enabled': True})
         video.unlink(missing_ok=True)
         main.local_videos.remove_ready(video)
+
+
+def test_sequential_lifespans_do_not_revive_workers_or_leak_jobs(monkeypatch, tmp_path):
+    """Each TestClient must own a distinct stopped event."""
+    from app import github_updates, update_control
+
+    seen = []
+
+    def idle(stop):
+        seen.append(stop)
+        stop.wait()
+
+    for obj, name in (
+        (main, "_online_loop"),
+        (main.weather, "polling_loop"),
+        (main.local_videos, "polling_loop"),
+        (main.github_updates, "polling_loop"),
+    ):
+        monkeypatch.setattr(obj, name, idle)
+
+    monkeypatch.setattr(update_control, "DATA", tmp_path)
+    monkeypatch.setattr(github_updates, "DATA", tmp_path)
+    for _ in range(2):
+        before = len(seen)
+        with TestClient(main.app) as client:
+            assert client.get("/api/health").status_code == 200
+        cohort = seen[before:]
+        assert len(cohort) == 4
+        assert all(event.is_set() for event in cohort)
+
+    assert len(set(seen)) == 2  # The old global STOP would reuse one event.
+    update_control.request({"version": "1.2.3"})
+    assert update_control.ready()
