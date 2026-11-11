@@ -86,6 +86,27 @@ def test_screen_and_protected_api(monkeypatch):
         assert client.get('/api/public').json()['reload_counter'] >= 1
 
 
+
+def test_kiosk_referrer_policy_allows_youtube_without_exposing_api_urls(monkeypatch):
+    """YouTube rejects embedded playback (error 153) without Referer.
+
+    Public document and admin map can send the origin only; API/assets cannot
+    reveal route or token details to cross-origin requests.
+    """
+    monkeypatch.setattr(weather, 'refresh_weather', lambda: {'available': False})
+    with TestClient(main.app) as client:
+        for route in ('/', '/admin'):
+            page = client.get(route)
+            assert page.status_code == 200
+            assert page.headers['referrer-policy'] == 'strict-origin-when-cross-origin'
+        assert client.get('/').headers['cache-control'] == 'no-store'
+        for route in ('/api/health', '/api/display/play-once', '/assets/display.js'):
+            response = client.get(route)
+            assert response.status_code == 200
+            assert response.headers['referrer-policy'] == 'no-referrer'
+
+
+
 def test_signed_modules_and_rollback(monkeypatch):
     monkeypatch.setattr(weather, 'refresh_weather', lambda: {})
     key = setup_key()
