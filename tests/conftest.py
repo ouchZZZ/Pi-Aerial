@@ -21,6 +21,9 @@ def isolated_background_workers(monkeypatch, request):
     monkeypatch.setattr(main.weather, "polling_loop", idle)
     monkeypatch.setattr(main.local_videos, "polling_loop", idle)
     monkeypatch.setattr(main.github_updates, "polling_loop", idle)
+    # Direct API actions may schedule cache work even without the poller.
+    # Tests of warm_cache explicitly replace try_cache with their own spy.
+    monkeypatch.setattr(main.online, "try_cache", lambda entry, stop=None: None)
 
     original_connect = socket.socket.connect
     original_connect_ex = socket.socket.connect_ex
