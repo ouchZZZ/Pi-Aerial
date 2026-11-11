@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress, osd_fonts, update_control
+from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress, osd_fonts, update_control, video_sources
 from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, atomic_json, init_data,
                       read_json, safe_id, settings, update_settings)
 
@@ -142,6 +142,10 @@ def ready_local_video(filename: str) -> Path:
     return path
 
 
+class PlayURL(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
 def ready_display_video(source: str, name: str) -> Path:
     if source == 'local':
         return ready_local_video(name)
@@ -164,6 +168,22 @@ def request_display_video(source: str, name: str, _: None = Depends(auth.require
     return {'ok': True}
 
 
+@app.post('/api/admin/display/play-once/url')
+def request_display_url(payload: PlayURL, _: None = Depends(auth.require_admin)):
+    try:
+        resolved = video_sources.resolve(payload.url)
+    except video_sources.InvalidVideoURL as exc:
+        raise HTTPException(422, str(exc)) from exc
+    with LOCK:
+        now = time.monotonic()
+        for token, (created, _, _) in list(DISPLAY_REQUESTS.items()):
+            if now - created >= DISPLAY_MEDIA_WINDOW:
+                del DISPLAY_REQUESTS[token]
+        DISPLAY_REQUESTS[secrets.token_urlsafe(24)] = (
+            now, resolved.provider, resolved.video_id)
+    return {'ok': True, 'provider': resolved.provider}
+
+
 @app.post('/api/admin/display/play-once/stop')
 def stop_display_video(_: None = Depends(auth.require_admin)):
     with LOCK:
@@ -177,7 +197,10 @@ def display_video_request():
         token = next(reversed(DISPLAY_REQUESTS), None)
         if token is None:
             return {'stop': True}
-        if time.monotonic() - DISPLAY_REQUESTS[token][0] < DISPLAY_REQUEST_WINDOW:
+        created, source, name = DISPLAY_REQUESTS[token]
+        if time.monotonic() - created < DISPLAY_REQUEST_WINDOW:
+            if source in video_sources.providers():
+                return {'id': token, **video_sources.describe(source, name)}
             return {'id': token, 'url': '/api/display/play-once/' + token}
     return None
 

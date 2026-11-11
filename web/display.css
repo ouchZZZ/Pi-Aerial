@@ -66,3 +66,8 @@ body.layout-preview #mediaCurtain{display:none}
 @media(prefers-reduced-motion:reduce){
   #mediaCurtain,#video,#clockCard,#weatherCard,#calendarCard,#moduleLayer,#clipFooter{transition:none!important}
 }
+
+/* Official external player occupies only the media plane, beneath the OSD. */
+#externalLayer{position:absolute;inset:0;width:100%;height:100%;z-index:2;background:#000}
+#externalLayer[hidden]{display:none}
+#externalPlayer,#externalLayer iframe{display:block;width:100%;height:100%;border:0}

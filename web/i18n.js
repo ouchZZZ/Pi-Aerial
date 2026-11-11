@@ -70,6 +70,7 @@
     ['Переместить или изменить размер: ','Move or resize: '],
 
     ['Готовые файлы','Ready files'],
+    ['Библиотека','Library'],
     ['Модули','Modules'],
     ['Обновления','Updates'],
     ['Экран и часы','Display and clock'],
@@ -127,6 +128,10 @@
     ['MP4 / WebM / M4V / MOV / MKV. После загрузки видео автоматически готовится в фоне: H.264, MP4, до 1080p/30 кадров/с. Совместимый H.264 перепаковывается без потери качества. Исходный файл сохраняется до успешного завершения; статус и повторная попытка доступны ниже.','MP4 / WebM / M4V / MOV / MKV. Uploaded videos are prepared in the background as H.264 MP4 at up to 1080p/30 fps. Compatible H.264 streams are remuxed without quality loss. Originals are retained until conversion succeeds.'],
     ['Загруженные файлы','Uploaded files'],
     ['Готовые видео','Prepared videos'],
+    ['Подготовленные файлы, история загрузок и разовый показ по ссылке.','Prepared files, download history, and one-time playback by URL.'],
+    ['Показать видео по ссылке','Play video from a link'],
+    ['Ссылка на видео','Video URL'],
+    ['Пока поддерживается YouTube через официальный плеер. Видео не скачивается и не попадает в кеш. Звук включён при ручном показе. Качество выбирает YouTube: гарантировать ограничение 1080p нельзя.','YouTube is currently supported via its official player. Videos are not downloaded or cached. Manual playback has audio. YouTube chooses the quality; a 1080p cap cannot be guaranteed.'],
     ['Все сконвертированные файлы и история роликов, которые уже скачивали.','All converted videos and previously downloaded item history.'],
     ['Остановить разовый показ','Stop one-time playback'],
     ['Видеозаставка воспроизводится без звука. Кнопки «Просмотр» и «Показать один раз без OSD» включают звук, если он есть в файле.','Screensaver playback is muted. Preview and Play once without OSD enable sound when the file contains audio.'],
