@@ -90,7 +90,7 @@ function makeHarness(search = '') {
       videos: [...publicState.videos], modules: [...publicState.modules],
     })}),
     console: {error: (...items) => errors.push(items), warn() {}},
-    location: {reload() {}, search},
+    location: {reload() {}, search, origin: 'http://pi.local'},
   };
   vm.createContext(context);
   vm.runInContext(displayJS, context, {filename: 'display.js'});
@@ -609,5 +609,90 @@ test('manual play-once failure restores silence even with no available playlist'
   h.video.pending.at(-1).reject(new Error('Video unavailable'));
   await settle();
   assert.equal(h.video.muted,true);
+  assert.equal(h.bodyClasses.has('playing-once'),false);
+});
+
+test('YouTube one-shot uses its own player, interrupts rotation, and restores on end', async()=>{
+  const h=await ready();
+  const players=[];
+  class FakePlayer{
+    constructor(element,options){this.element=element;this.options=options;players.push(this);}
+    destroy(){this.destroyed=true;}
+    unMute(){this.unmuted=true;}
+    playVideo(){this.started=true;}
+  }
+  h.context.YT={Player:FakePlayer,PlayerState:{PLAYING:1,ENDED:0}};
+  h.publicState.videos=[{url:'/media/background.mp4'}];
+  await h.context.poll();
+  const pending=h.video.pending.at(-1);
+  h.publicState.displayRequest={
+    id:'youtube-one',kind:'embed',provider:'youtube',video_id:'dQw4w9WgXcQ'
+  };
+  await h.context.pollDisplayRequest();
+  await settle();
+  assert.equal(players.length,1);
+  assert.equal(players[0].element,'externalPlayer');
+  assert.equal(players[0].options.videoId,'dQw4w9WgXcQ');
+  assert.equal(players[0].options.playerVars.origin,'http://pi.local');
+  assert.equal(h.elements.get('externalLayer').hidden,false);
+  assert.ok(h.bodyClasses.has('playing-once'));
+  assert.ok(h.video.pauseCalls>0);
+  pending.reject(new Error('Interrupted by YouTube'));
+  await settle();
+  assert.ok(h.bodyClasses.has('playing-once'));
+  players[0].options.events.onReady({target:players[0]});
+  assert.equal(players[0].unmuted,true);
+  assert.equal(players[0].started,true);
+  players[0].options.events.onStateChange({data:1});
+  players[0].options.events.onStateChange({data:0});
+  assert.ok(players[0].destroyed);
+  assert.equal(h.elements.get('externalLayer').hidden,true);
+  assert.equal(h.video.src,'/media/background.mp4');
+  assert.equal(h.video.muted,true);
+  assert.ok(!h.bodyClasses.has('playing-once'));
+});
+
+test('Stop and YouTube playback errors discard stale iframe callbacks', async()=>{
+  const h=await ready();
+  const players=[];
+  class FakePlayer{
+    constructor(element,options){this.options=options;players.push(this);}
+    destroy(){this.destroyed=true;}
+  }
+  h.context.YT={Player:FakePlayer,PlayerState:{PLAYING:1,ENDED:0}};
+  h.publicState.videos=[{url:'/media/rotation.mp4'}];
+  await h.context.poll();
+  h.publicState.displayRequest={id:'yt-stop',kind:'embed',provider:'youtube',video_id:'dQw4w9WgXcQ'};
+  await h.context.pollDisplayRequest();
+  await settle();
+  h.publicState.displayRequest={stop:true};
+  await h.context.pollDisplayRequest();
+  assert.equal(players[0].destroyed,true);
+  assert.equal(h.video.src,'/media/rotation.mp4');
+  players[0].options.events.onError({data:150});
+  assert.ok(!h.bodyClasses.has('playing-once'));
+  assert.equal(h.errors.length,0);
+
+  h.publicState.displayRequest={id:'yt-error',kind:'embed',provider:'youtube',video_id:'dQw4w9WgXcQ'};
+  await h.context.pollDisplayRequest();
+  await settle();
+  assert.equal(players.length,2);
+  players[1].options.events.onError({data:150});
+  assert.equal(h.video.src,'/media/rotation.mp4');
+  assert.equal(h.video.muted,true);
+  assert.ok(!h.bodyClasses.has('playing-once'));
+  assert.equal(h.elements.get('externalLayer').hidden,true);
+});
+
+test('Malformed external video descriptors cannot inject a player URL', async()=>{
+  const h=await ready();
+  h.publicState.videos=[{url:'/media/rotation.mp4'}];
+  await h.context.poll();
+  h.publicState.displayRequest={
+    id:'yt-malformed',kind:'embed',provider:'youtube',video_id:'../javascript'
+  };
+  await h.context.pollDisplayRequest();
+  assert.equal(h.elements.get('externalLayer').hidden,false === true);
+  assert.equal(h.video.src,'/media/rotation.mp4');
   assert.equal(h.bodyClasses.has('playing-once'),false);
 });
