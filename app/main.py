@@ -12,6 +12,7 @@ import urllib.error
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 from zoneinfo import available_timezones
 from urllib.parse import quote
 
@@ -152,7 +153,7 @@ class PlayURL(BaseModel):
 
 class PlayReport(BaseModel):
     id: str = Field(min_length=8, max_length=128)
-    stage: str = Field(pattern=r'\A(starting|api_ready|playing|ended|error)\Z')
+    stage: Literal['starting', 'api_ready', 'playing', 'ended', 'error']
     detail: str = Field(default='', max_length=160)
 
 
