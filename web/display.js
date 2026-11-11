@@ -333,7 +333,7 @@ function playVKEmbedded(request){
     iframe.title='VK Видео';
     // Fixed VK host; all query values are revalidated, never inject raw URLs.
     iframe.src='https://vkvideo.ru/video_ext.php?oid='+encodeURIComponent(request.owner_id)+
-      '&id='+encodeURIComponent(request.video_id)+'&hd=3&autoplay=1&js_api=1'+
+      '&id='+encodeURIComponent(request.video_id)+'&hd=4&autoplay=1&js_api=1'+
       (request.hash?'&hash='+encodeURIComponent(request.hash):'');
     iframe.allow='autoplay; encrypted-media; fullscreen; picture-in-picture';
     iframe.allowFullscreen=true;
