@@ -125,7 +125,7 @@ def test_failed_rollback_health_reports_error(monkeypatch, tmp_path):
     spec.loader.exec_module(helper)
     releases = tmp_path / 'releases'
     old = releases / 'old'
-    new = releases / 'new'
+    new = releases / '0.2.0'
     old.mkdir(parents=True)
     new.mkdir()
     (old / 'VERSION').write_text('0.1.0')
