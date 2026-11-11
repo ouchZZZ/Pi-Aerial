@@ -80,6 +80,10 @@ app.mount('/assets', StaticFiles(directory=WEB), name='assets')
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
+    # A screensaver never needs to capture camera or microphone. Deny it also
+    # inside third-party video iframes, without restricting media playback.
+    if request.url.path == '/':
+        response.headers['Permissions-Policy'] = 'camera=(), microphone=()'
     # The OSM map and YouTube's official iframe player require an HTTP Referer.
     # Only the public display and admin documents may send their origin across
     # sites. Keep private API endpoints and media URLs at no-referrer.
