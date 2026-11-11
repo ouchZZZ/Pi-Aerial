@@ -30,6 +30,7 @@ def test_github_status_and_queue_require_admin(monkeypatch):
         pending = json.loads((DATA / 'pending_update.json').read_text())
         assert pending == {'source': 'github', 'revision': sha}
         assert client.post('/api/admin/github/update', headers=headers).status_code == 409
+        (DATA / 'update_request.json').unlink(missing_ok=True)
         (DATA / 'pending_update.json').unlink()
 
 
@@ -97,3 +98,32 @@ def test_reject_untrusted_remotes(monkeypatch, tmp_path):
     }))
     with pytest.raises(ValueError, match='Некорректный'):
         github_updates._config()
+
+
+def test_manual_update_drains_media_and_rejects_new_uploads(monkeypatch):
+    from app import update_control
+    sha = 'c' * 40
+    monkeypatch.setattr(github_updates, 'remote_revision', lambda: sha)
+    monkeypatch.setattr(github_updates, 'installed_revision', lambda: 'b' * 40)
+    with TestClient(main.app) as client:
+        headers = auth_headers(client)
+        try:
+            with update_control.media_job() as admitted:
+                assert admitted
+                response = client.post('/api/admin/github/update', headers=headers)
+                assert response.status_code == 200
+                assert not (DATA / 'pending_update.json').exists()
+                assert client.get('/api/health').json()['update_ready'] is False
+                status = client.get('/api/admin/status').json()
+                assert status['update_pending'] is True
+                assert status['update_waiting'] is True
+                upload = client.post('/api/admin/videos',
+                    files={'file': ('clip.mp4', b'0000ftyp0000', 'video/mp4')},
+                    headers=headers)
+                assert upload.status_code == 503
+            update_control.promote()
+            assert json.loads((DATA / 'pending_update.json').read_text())['revision'] == sha
+            assert client.get('/api/health').json()['update_ready'] is True
+        finally:
+            (DATA / 'update_request.json').unlink(missing_ok=True)
+            (DATA / 'pending_update.json').unlink(missing_ok=True)

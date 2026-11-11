@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress, osd_fonts
+from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress, osd_fonts, update_control
 from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, atomic_json, init_data,
                       read_json, safe_id, settings, update_settings)
 
@@ -44,11 +44,14 @@ async def lifespan(_: FastAPI):
     online_worker.start()
     local_video_worker = threading.Thread(target=local_videos.polling_loop, args=(STOP,), daemon=True)
     local_video_worker.start()
+    update_worker = threading.Thread(target=github_updates.polling_loop, args=(STOP,), daemon=True)
+    update_worker.start()
     yield
     STOP.set()
     worker.join(timeout=1)
     online_worker.join(timeout=1)
     local_video_worker.join(timeout=1)
+    update_worker.join(timeout=1)
 
 
 def _online_loop(stop: threading.Event):
@@ -93,7 +96,8 @@ def admin():
 
 @app.get('/api/health')
 def health():
-    return {'ok': True, 'version': CURRENT_VERSION, 'revision': CURRENT_REVISION}
+    return {'ok': True, 'version': CURRENT_VERSION, 'revision': CURRENT_REVISION,
+            'update_ready': update_control.ready()}
 
 
 def video_list() -> list[dict]:
@@ -375,7 +379,10 @@ def admin_status(_: None = Depends(auth.require_admin)):
                         for m in mods],
             'storage': {'total': disk.total, 'used': disk.used, 'free': disk.free},
             'trusted_keys': len(list((DATA / 'trusted_keys').glob('*.pem'))),
-            'update_pending': (DATA / 'pending_update.json').exists(),
+            'update_pending': update_control.paused(),
+            'update_waiting': ((DATA / 'update_request.json').exists()
+                               and not (DATA / 'pending_update.json').exists()),
+            'auto_update': read_json(DATA / 'auto_update_status.json'),
             'last_update': read_json(DATA / 'update_status.json'),
             'online_sources': online.source_status(),
             'cache': {'enabled': cfg['online_cache_enabled'],
@@ -462,33 +469,37 @@ async def save_upload(upload: UploadFile, maximum: int, suffix: str) -> Path:
 
 @app.post('/api/admin/videos')
 async def add_video(file: UploadFile = File(...), _: None = Depends(auth.require_admin)):
-    original = Path(file.filename or 'video.mp4').name
-    suffix = Path(original).suffix.lower()
-    if suffix not in VIDEO_EXTENSIONS:
-        raise HTTPException(422, 'Поддерживаются MP4, WebM, M4V, MOV и MKV')
-    # Reject obviously invalid files before enforcing the free-space reserve.
-    header = await file.read(12)
-    await file.seek(0)
-    if suffix in ('.mp4', '.m4v', '.mov') and header[4:8] != b'ftyp':
-        raise HTTPException(422, 'Это не MP4/M4V/MOV-файл')
-    if suffix in ('.webm', '.mkv') and not header.startswith(b'\x1a\x45\xdf\xa3'):
-        raise HTTPException(422, 'Это не WebM/MKV-файл')
-    free = shutil.disk_usage(DATA).free
-    if free < 9 * 1024**3:
-        raise HTTPException(507, 'Нужно 9 ГБ свободного места для загрузки и обработки')
-    maximum = min(10 * 1024**3, max(0, free - 9 * 1024**3))
-    try:
-        incoming = await save_upload(file, maximum, suffix)
-        safe_name = re.sub(r'[^0-9A-Za-zА-Яа-яЁё._-]+', '_', original)[:100].strip('._-')
-        if not safe_name or not safe_name.lower().endswith(suffix):
-            safe_name = 'video' + suffix
-        return {'ok': True, 'message': 'Видео принято и поставлено в очередь фоновой подготовки',
-                **local_videos.enqueue(incoming, safe_name)}
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    finally:
-        if 'incoming' in locals():
-            incoming.unlink(missing_ok=True)
+    with update_control.media_job() as admitted:
+        if not admitted:
+            await file.close()
+            raise HTTPException(503, 'Обновление ожидает завершения видео; повторите загрузку позже')
+        original = Path(file.filename or 'video.mp4').name
+        suffix = Path(original).suffix.lower()
+        if suffix not in VIDEO_EXTENSIONS:
+            raise HTTPException(422, 'Поддерживаются MP4, WebM, M4V, MOV и MKV')
+        # Reject obviously invalid files before enforcing the free-space reserve.
+        header = await file.read(12)
+        await file.seek(0)
+        if suffix in ('.mp4', '.m4v', '.mov') and header[4:8] != b'ftyp':
+            raise HTTPException(422, 'Это не MP4/M4V/MOV-файл')
+        if suffix in ('.webm', '.mkv') and not header.startswith(b'\x1a\x45\xdf\xa3'):
+            raise HTTPException(422, 'Это не WebM/MKV-файл')
+        free = shutil.disk_usage(DATA).free
+        if free < 9 * 1024**3:
+            raise HTTPException(507, 'Нужно 9 ГБ свободного места для загрузки и обработки')
+        maximum = min(10 * 1024**3, max(0, free - 9 * 1024**3))
+        try:
+            incoming = await save_upload(file, maximum, suffix)
+            safe_name = re.sub(r'[^0-9A-Za-zА-Яа-яЁё._-]+', '_', original)[:100].strip('._-')
+            if not safe_name or not safe_name.lower().endswith(suffix):
+                safe_name = 'video' + suffix
+            return {'ok': True, 'message': 'Видео принято и поставлено в очередь фоновой подготовки',
+                    **local_videos.enqueue(incoming, safe_name)}
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        finally:
+            if 'incoming' in locals():
+                incoming.unlink(missing_ok=True)
 
 
 @app.delete('/api/admin/videos/{filename}')
@@ -540,7 +551,7 @@ def module_rollback(module_id: str, _: None = Depends(auth.require_admin)):
 
 @app.post('/api/admin/core/install')
 async def install_core(file: UploadFile = File(...), _: None = Depends(auth.require_admin)):
-    if (DATA / 'pending_update.json').exists():
+    if update_control.paused():
         raise HTTPException(409, 'Предыдущее обновление ещё выполняется')
     try:
         incoming = await save_upload(file, bundles.MAX_BUNDLE_BYTES, '.zip')
@@ -578,7 +589,7 @@ async def github_update(_: None = Depends(auth.require_admin)):
         latest = await asyncio.to_thread(github_updates.remote_revision)
         if latest == github_updates.installed_revision():
             return {'ok': True, 'message': 'Установлена последняя версия', 'revision': latest}
-        atomic_json(DATA / 'pending_update.json', {'source': 'github', 'revision': latest})
+        update_control.request({'source': 'github', 'revision': latest})
         return {'ok': True, 'message': 'Обновление из GitHub поставлено в очередь с откатом', 'revision': latest}
     except ValueError as exc:
         raise HTTPException(503, str(exc)) from exc

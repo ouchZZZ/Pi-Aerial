@@ -5,6 +5,8 @@ At the configured cache limit the worker pauses without evicting ready videos.
 """
 from __future__ import annotations
 
+from . import update_control
+
 import hashlib
 import html
 import io
@@ -598,91 +600,94 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None) -
     # Keep the acquired semaphore even if the module global is replaced.
     slot = slot if slot is not None else DOWNLOAD_SLOT
     ident = entry["id"]
-    try:
-        cfg = settings()
-        if not cfg.get("online_cache_enabled", True):
-            return
-        max_bytes = int(cfg.get("online_cache_gb", 12)) * 1024**3
-        CACHE_FOLDER.mkdir(parents=True, exist_ok=True)
-        admission = cache_status()
-        if admission["paused"]:
-            return
-        file_limit = admission["file_limit_bytes"]
-        temp = CACHE_FOLDER / (ident + ".part")
-        muxed = CACHE_FOLDER / (ident + ".mux.mp4")
-        final = CACHE_FOLDER / (ident + ".mp4")
-        if cached_file(ident) is not None:
-            return
-        # Remove incomplete files left by a crashed older download.
-        temp.unlink(missing_ok=True)
-        muxed.unlink(missing_ok=True)
-        provider = entry["provider"]
-        video_progress.start("online", ident, entry.get("name") or ident, provider)
-        opener = urllib.request.build_opener(SafeRedirect(provider),
-                                              urllib.request.HTTPSHandler(context=_tls_context()))
-        req = urllib.request.Request(entry["remote_url"],
-                                     headers={"User-Agent": "PiAerial/0.3"})
-        total = 0
+    with update_control.media_job() as admitted:
         try:
-            with opener.open(req, timeout=18) as response, temp.open("xb") as file:
-                length = int(response.headers.get("Content-Length") or 0)
-                if length > file_limit:
-                    raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
-                video_progress.download("online", ident, 0, length or None)
-                while True:
-                    buf = response.read(1024 * 256)
-                    if not buf:
-                        break
-                    total += len(buf)
-                    if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
-                        raise ValueError("Достигнут лимит видео или свободного места")
-                    file.write(buf)
-                    video_progress.download("online", ident, total, length or None)
-            if total < 1024:
-                raise ValueError("Пустой видеоролик")
-            with temp.open("rb") as f:
-                header = f.read(12)
-            if header[4:8] != b"ftyp":
-                raise ValueError("Ответ сервера не содержит MP4/MOV")
-            if shutil.which("ffmpeg") is None:
-                raise ValueError("Нужен ffmpeg для подготовки видео")
-            if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:
-                raise ValueError("Недостаточно места для преобразования видео")
-            print(f"[online] preparing {provider}: {ident} "
-                  f"({total // 1024 // 1024} МБ исходник)", flush=True)
-            mode = normalize_video(
-                temp, muxed, max_bytes=file_limit, force_transcode=True,
-                on_progress=lambda **fields: video_progress.conversion(
-                    "online", ident, **fields))
-            # Other files may be added while we convert. Discard only this
-            # new output if it no longer fits: never evict existing MP4.
-            if _cache_used_bytes() + muxed.stat().st_size > max_bytes:
-                raise ValueError("Кеш заполнен во время подготовки нового видео")
-            os.replace(muxed, final)
-            (CACHE_FOLDER / (ident + ".ready")).write_text(CACHE_PROFILE, encoding="utf8")
-            _mark_processed(ident)
-            from . import online_library
-            online_library.remember(ident, entry)
-            print(f"[online] ready {provider}: {ident} "
-                  f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
-            video_progress.finish("online", ident, True)
-        finally:
+            if not admitted:
+                return
+            cfg = settings()
+            if not cfg.get("online_cache_enabled", True):
+                return
+            max_bytes = int(cfg.get("online_cache_gb", 12)) * 1024**3
+            CACHE_FOLDER.mkdir(parents=True, exist_ok=True)
+            admission = cache_status()
+            if admission["paused"]:
+                return
+            file_limit = admission["file_limit_bytes"]
+            temp = CACHE_FOLDER / (ident + ".part")
+            muxed = CACHE_FOLDER / (ident + ".mux.mp4")
+            final = CACHE_FOLDER / (ident + ".mp4")
+            if cached_file(ident) is not None:
+                return
+            # Remove incomplete files left by a crashed older download.
             temp.unlink(missing_ok=True)
             muxed.unlink(missing_ok=True)
-    except Exception as exc:
-        with LOCK:
-            CACHE_FAILED_UNTIL[ident] = time.time() + 3600
-        video_progress.finish("online", ident, False, "Ошибка загрузки или обработки")
-        print(f"[online] cannot cache {ident}: {exc}", flush=True)
-    finally:
-        with LOCK:
-            ACTIVE.discard(ident)
-        slot.release()
+            provider = entry["provider"]
+            video_progress.start("online", ident, entry.get("name") or ident, provider)
+            opener = urllib.request.build_opener(SafeRedirect(provider),
+                                                  urllib.request.HTTPSHandler(context=_tls_context()))
+            req = urllib.request.Request(entry["remote_url"],
+                                         headers={"User-Agent": "PiAerial/0.3"})
+            total = 0
+            try:
+                with opener.open(req, timeout=18) as response, temp.open("xb") as file:
+                    length = int(response.headers.get("Content-Length") or 0)
+                    if length > file_limit:
+                        raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
+                    video_progress.download("online", ident, 0, length or None)
+                    while True:
+                        buf = response.read(1024 * 256)
+                        if not buf:
+                            break
+                        total += len(buf)
+                        if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
+                            raise ValueError("Достигнут лимит видео или свободного места")
+                        file.write(buf)
+                        video_progress.download("online", ident, total, length or None)
+                if total < 1024:
+                    raise ValueError("Пустой видеоролик")
+                with temp.open("rb") as f:
+                    header = f.read(12)
+                if header[4:8] != b"ftyp":
+                    raise ValueError("Ответ сервера не содержит MP4/MOV")
+                if shutil.which("ffmpeg") is None:
+                    raise ValueError("Нужен ffmpeg для подготовки видео")
+                if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:
+                    raise ValueError("Недостаточно места для преобразования видео")
+                print(f"[online] preparing {provider}: {ident} "
+                      f"({total // 1024 // 1024} МБ исходник)", flush=True)
+                mode = normalize_video(
+                    temp, muxed, max_bytes=file_limit, force_transcode=True,
+                    on_progress=lambda **fields: video_progress.conversion(
+                        "online", ident, **fields))
+                # Other files may be added while we convert. Discard only this
+                # new output if it no longer fits: never evict existing MP4.
+                if _cache_used_bytes() + muxed.stat().st_size > max_bytes:
+                    raise ValueError("Кеш заполнен во время подготовки нового видео")
+                os.replace(muxed, final)
+                (CACHE_FOLDER / (ident + ".ready")).write_text(CACHE_PROFILE, encoding="utf8")
+                _mark_processed(ident)
+                from . import online_library
+                online_library.remember(ident, entry)
+                print(f"[online] ready {provider}: {ident} "
+                      f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
+                video_progress.finish("online", ident, True)
+            finally:
+                temp.unlink(missing_ok=True)
+                muxed.unlink(missing_ok=True)
+        except Exception as exc:
+            with LOCK:
+                CACHE_FAILED_UNTIL[ident] = time.time() + 3600
+            video_progress.finish("online", ident, False, "Ошибка загрузки или обработки")
+            print(f"[online] cannot cache {ident}: {exc}", flush=True)
+        finally:
+            with LOCK:
+                ACTIVE.discard(ident)
+            slot.release()
 
 
 def try_cache(entry: dict) -> None:
     cfg = settings()
-    if (not cfg.get("online_autodownload_enabled", True)
+    if (update_control.paused() or not cfg.get("online_autodownload_enabled", True)
             or not cfg.get("online_cache_enabled", True)
             or cache_status()["paused"]):
         return

@@ -25,6 +25,7 @@ def test_unhealthy_core_update_rolls_back(monkeypatch, tmp_path):
     monkeypatch.setattr(helper, 'DATA', data)
     monkeypatch.setattr(helper, 'PENDING', data / 'pending_update.json')
     monkeypatch.setattr(helper, 'STATUS', data / 'update_status.json')
+    monkeypatch.setattr(helper, 'background_ready', lambda: True)
     calls = []
     monkeypatch.setattr(helper, 'service_restart', lambda: calls.append('restart'))
     monkeypatch.setattr(helper, 'prepare_venv', lambda target, old: None)
@@ -34,3 +35,28 @@ def test_unhealthy_core_update_rolls_back(monkeypatch, tmp_path):
     assert (tmp_path / 'current').resolve() == releases / '0.1.0'
     assert len(calls) == 2  # try release, then revert release
     assert not (data / 'pending_update.json').exists()
+
+
+def test_busy_media_defers_without_staging_restart_or_failure(monkeypatch, tmp_path):
+    spec = importlib.util.spec_from_file_location('deferred_helper',
+        Path(__file__).parents[1] / 'tools' / 'apply_core_update.py')
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    old = tmp_path / 'releases' / 'old'
+    old.mkdir(parents=True)
+    (tmp_path / 'current').mkdir()
+    data = tmp_path / 'data'
+    data.mkdir()
+    payload = {'source': 'github', 'revision': 'a' * 40}
+    (data / 'pending_update.json').write_text(json.dumps(payload))
+    for name, value in [('BASE', tmp_path), ('DATA', data),
+                        ('PENDING', data / 'pending_update.json'),
+                        ('STATUS', data / 'update_status.json')]:
+        monkeypatch.setattr(helper, name, value)
+    monkeypatch.setattr(helper, 'background_ready', lambda: False)
+    monkeypatch.setattr(helper, 'stage_github', lambda *args: pytest.fail('staged busy update'))
+    monkeypatch.setattr(helper, 'service_restart', lambda: pytest.fail('interrupted media'))
+    helper.main()
+    assert not helper.PENDING.exists()
+    assert not helper.STATUS.exists()
+    assert json.loads((data / 'update_request.json').read_text())['payload'] == payload

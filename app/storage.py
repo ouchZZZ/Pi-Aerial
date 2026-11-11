@@ -37,6 +37,7 @@ DEFAULTS = {
     'osd_layout_mode': 'alternate',  # Preserve legacy video-by-video switching.
     'enabled_modules': {},
     'local_videos_enabled': True,
+    'auto_update_enabled': False,
     'online_sources': {'apple': True, 'nasa': True},
     'online_cache_enabled': True,
     'online_autodownload_enabled': True,
@@ -128,7 +129,7 @@ def update_settings(new: dict) -> dict:
     if type(cache_limit) is not int or not 1 <= cache_limit <= maximum:
         raise ValueError(f'Лимит кеша должен быть от 1 до {maximum} ГБ')
     for key in ('show_clock', 'show_date', 'show_weather', 'night_mode', 'clock_shift',
-                'local_videos_enabled', 'online_autodownload_enabled'):
+                'local_videos_enabled', 'online_autodownload_enabled', 'auto_update_enabled'):
         if not isinstance(result[key], bool):
             raise ValueError(f'Параметр {key} должен быть логическим')
     if result['clock_position'] not in ('bottom-left', 'bottom-center', 'center', 'top-right'):

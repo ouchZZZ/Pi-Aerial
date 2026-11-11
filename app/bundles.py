@@ -13,7 +13,8 @@ from pathlib import Path
 from threading import RLock
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from .storage import BASE, DATA, CURRENT_VERSION, atomic_json, read_json, safe_id
+from . import update_control
+from .storage import BASE, DATA, CURRENT_VERSION, LOCK, atomic_json, read_json, safe_id
 
 BUNDLE_LOCK = RLock()
 MAX_BUNDLE_BYTES = 80 * 1024 * 1024
@@ -209,7 +210,9 @@ def rollback_module(module_id: str) -> dict:
 
 
 def stage_core(bundle: Path) -> dict:
-    with BUNDLE_LOCK:
+    with BUNDLE_LOCK, LOCK:
+        if update_control.paused():
+            raise ValueError('Предыдущее обновление ещё выполняется')
         manifest, _ = verify_bundle(bundle, 'core')
         version = manifest['version']
         releases = BASE / 'releases'
@@ -219,5 +222,5 @@ def stage_core(bundle: Path) -> dict:
             raise ValueError('Эта версия уже существует')
         extract_verified(bundle, dest, 'core')
         # This marker is consumed by a separate user-level systemd update helper.
-        atomic_json(DATA / 'pending_update.json', {'version': version})
+        update_control.request({'version': version})
         return manifest

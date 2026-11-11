@@ -249,6 +249,11 @@
     ['Кеш заполнен во время подготовки нового видео','Cache filled while preparing a new video'],
     [' · удалено, но сохранено в истории: ',' · deleted, retained in history: '],
     [' · всего на диске: ',' · total on disk: '],
+    ['Автообновление','Automatic updates'],
+    ['Автоматически обновлять Pi Aerial','Automatically update Pi Aerial'],
+    ['Проверять GitHub раз в час. Перед установкой дождаться текущей загрузки и конвертации; новые задачи продолжатся после обновления. При ошибке запуска вернётся предыдущая версия.','Check GitHub hourly. Finish active downloads and conversions before installing; queued jobs resume after the update. Restore the previous release if startup fails.'],
+    ['Ожидание завершения загрузки и конвертации','Waiting for downloads and conversions to finish'],
+    ['Обновление ожидает завершения видео; повторите загрузку позже','Update waiting for video tasks; try uploading again later'],
     // Dynamic states, dialogs and notification phrases
     ['Объём ','Capacity '],
     ['Идёт установка','Installing'],

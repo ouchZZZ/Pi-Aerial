@@ -5,6 +5,8 @@ until ffprobe + ffmpeg have produced and verified a complete compatible MP4.
 """
 from __future__ import annotations
 
+from . import update_control
+
 import os
 import secrets
 import shutil
@@ -181,6 +183,11 @@ def delete_job(ident: str) -> bool:
 
 
 def process_one() -> bool:
+    with update_control.media_job() as admitted:
+        return _process_one() if admitted else False
+
+
+def _process_one() -> bool:
     """Handle at most one queued job. May be called again after a restart."""
     with LOCK:
         jobs = _jobs()
