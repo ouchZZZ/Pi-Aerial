@@ -104,7 +104,7 @@ def test_ffmpeg_live_progress_reader_and_timeout(monkeypatch):
                 "out_time_us=5000000\nspeed=2.0x\nprogress=end\n"
             )
         def wait(self, timeout):
-            assert timeout == 20
+            assert timeout == 1
             return 0
 
     cmds = []
@@ -134,7 +134,7 @@ def test_conversion_callback_preserves_single_ffmpeg_slot(monkeypatch, tmp_path)
     received = []
     def fake_ffmpeg(cmd, timeout, callback, duration):
         assert duration == 30
-        assert timeout == 300
+        assert timeout == 1200
         callback(stage="converting", position_s=15, duration_s=30,
                  encode_speed="1x")
         out.write_bytes(bytes.fromhex("000000186674797069736f6d") + b"x" * 3000)
@@ -146,3 +146,50 @@ def test_conversion_callback_preserves_single_ffmpeg_slot(monkeypatch, tmp_path)
         "waiting", "converting", "converting", "finalizing"
     ]
     assert received[2]["position_s"] == 15
+
+
+@pytest.mark.parametrize("events,stalls", [
+    ([(1200, None), (2400, None)], True),
+    ([(1200, 1), (2400, 2), (3600, 3), (4800, 4)], False),
+    ([(1200, None), (1300, 1), (2500, None), (3700, None)], True),
+    ([(1200, 1), (2400, 1), (3600, 1)], True),
+])
+def test_idle_watchdog_checks_twice_and_resets_on_advance(monkeypatch, events, stalls):
+    clock = [0.0]
+    monkeypatch.setattr(vc.time, "monotonic", lambda: clock[0])
+    reader = []
+    class SyncReader:
+        def __init__(self, target, **kwargs):
+            reader.append(target)
+        def start(self):
+            pass
+        def join(self, **kwargs):
+            pass
+    monkeypatch.setattr(vc.threading, "Thread", SyncReader)
+    class Process:
+        def __init__(self):
+            self.stdout = io.StringIO("")
+            self.events = iter(events)
+            self.killed = False
+        def wait(self, timeout):
+            if self.killed:
+                return -9
+            event = next(self.events, None)
+            if event is None:
+                return 0
+            clock[0], position = event
+            if position is not None:
+                self.stdout = io.StringIO(
+                    f"out_time_us={position * 1000000}\nprogress=continue\n")
+                reader[0]()
+            raise subprocess.TimeoutExpired("ffmpeg", timeout)
+        def kill(self):
+            self.killed = True
+    process = Process()
+    monkeypatch.setattr(vc.subprocess, "Popen", lambda *a, **kw: process)
+    if stalls:
+        with pytest.raises(TimeoutError, match="нет прогресса"):
+            vc._run_with_progress(["ffmpeg", "out.mp4"], 1200, None, None)
+    else:
+        vc._run_with_progress(["ffmpeg", "out.mp4"], 1200, None, None)
+    assert process.killed is stalls
