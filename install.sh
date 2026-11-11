@@ -115,7 +115,7 @@ command -v chromium >/dev/null && BROWSER=chromium || BROWSER=chromium-browser
 while true; do
   "$BROWSER" --kiosk --incognito --noerrdialogs --no-first-run --disable-infobars \
     --disable-session-crashed-bubble --disable-features=TranslateUI \
-    --autoplay-policy=no-user-gesture-required --password-store=basic \
+    --deny-permission-prompts --autoplay-policy=no-user-gesture-required --password-store=basic \
     http://127.0.0.1:8080
   sleep 4
 done

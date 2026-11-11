@@ -64,3 +64,10 @@ def test_public_installer_keeps_legacy_ssh_support():
     assert 'git@github.com:ouchZZZ/Pi-Aerial.git' in installer
     assert 'test -f "$HOME/.ssh/pi_aerial_github" ||' not in installer
     assert 'PUBLIC_REMOTE' in github and 'LEGACY_SSH_REMOTE' in github
+
+
+def test_kiosk_rejects_browser_permission_prompts_without_breaking_autoplay():
+    installer = (ROOT / 'install.sh').read_text(encoding='utf8')
+    assert '--deny-permission-prompts' in installer
+    assert '--autoplay-policy=no-user-gesture-required' in installer
+    assert '--use-fake-ui-for-media-stream' not in installer
