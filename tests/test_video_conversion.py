@@ -58,6 +58,7 @@ def test_copy_h264_in_background_without_quality_loss(monkeypatch, tmp_path):
     command, kwargs = calls[0]
     assert command[:3] == ["nice", "-n", "15"]
     assert command[command.index("-c:v") + 1] == "copy"
+    assert "-vf" not in command
     assert "+faststart" in command
     assert kwargs["timeout"] == 1200
 
@@ -83,7 +84,21 @@ def test_transcode_hevc_with_two_threads_and_scaled_1080p(monkeypatch, tmp_path)
     assert command[command.index("-threads") + 1] == "2"
     assert "scale=1920:1080" in command[command.index("-vf") + 1]
     assert "format=yuv420p" in command[command.index("-vf") + 1]
+    assert "fps=30" in command[command.index("-vf") + 1]
+    assert "flags=bicubic" in command[command.index("-vf") + 1]
+    assert command[command.index("-preset") + 1] == "superfast"
+    assert command[command.index("-crf") + 1] == "20"
+    assert command[command.index("-maxrate") + 1] == "12000k"
+    assert command[command.index("-bufsize") + 1] == "24000k"
     assert kwargs["timeout"] == 1200
+
+
+def test_transcoding_preserves_source_fps_when_already_under_30(monkeypatch, tmp_path):
+    vp9 = {**AVC, "codec_name": "vp9", "avg_frame_rate": "24000/1001"}
+    src, dest, calls = _fake_convert(monkeypatch, tmp_path, vp9)
+    assert vc.normalize_video(src, dest) == "transcode"
+    command, _ = calls[0]
+    assert "fps=" not in command[command.index("-vf") + 1]
 
 
 def test_transcoding_does_not_upscale_small_videos(monkeypatch, tmp_path):

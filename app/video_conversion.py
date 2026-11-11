@@ -251,13 +251,23 @@ def _normalize_video_locked(source: Path, output: Path, max_bytes: int | None,
         scale = min(1.0, MAX_WIDTH / width, MAX_HEIGHT / height)
         out_width = max(2, int(width * scale) // 2 * 2)
         out_height = max(2, int(height * scale) // 2 * 2)
-        # CPU-safe fallback: two low-priority software-encoding threads.
-        # Encoding 4K originals can take a long time on a Pi 4.
+        # Keep native 24/25/29.97 fps instead of duplicating frames to 30.
+        # Cap only excessive or unknown input rates for Pi 4 compatibility.
+        filters = []
+        fps = _fps(stream)
+        if fps <= 0 or fps > MAX_FPS + 0.05:
+            filters.append(f"fps={MAX_FPS}")
+        filters.extend([
+            f"scale={out_width}:{out_height}:flags=bicubic",
+            "format=yuv420p",
+        ])
+        # Two low-priority software-encoding threads; no CPU-heavy preset.
+        # Higher fidelity helps preserve details in snow, foliage and water.
         encoder = [
-            "-vf", f"fps={MAX_FPS},scale={out_width}:{out_height}:flags=fast_bilinear,format=yuv420p",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "25",
+            "-vf", ",".join(filters),
+            "-c:v", "libx264", "-preset", "superfast", "-crf", "20",
             "-threads", "2", "-profile:v", "main", "-level:v", "4.0",
-            "-maxrate", "4500k", "-bufsize", "9000k",
+            "-maxrate", "12000k", "-bufsize", "24000k",
         ]
     # Preserve the first audio track when present. AAC is widely supported by
     # Chromium in MP4, while the '?' keeps silent Apple/NASA clips valid.
