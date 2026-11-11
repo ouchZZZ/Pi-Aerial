@@ -250,8 +250,10 @@
     [' · удалено, но сохранено в истории: ',' · deleted, retained in history: '],
     [' · всего на диске: ',' · total on disk: '],
     ['Автообновление','Automatic updates'],
+    ['Проверять каждые, мин','Check every, minutes'],
+    ['Интервал автообновления должен быть целым числом минут не меньше 1','The update interval must be a whole number of minutes, at least 1'],
     ['Автоматически обновлять Pi Aerial','Automatically update Pi Aerial'],
-    ['Проверять GitHub раз в час. Перед установкой дождаться текущей загрузки и конвертации; новые задачи продолжатся после обновления. При ошибке запуска вернётся предыдущая версия.','Check GitHub hourly. Finish active downloads and conversions before installing; queued jobs resume after the update. Restore the previous release if startup fails.'],
+    ['Перед установкой дождаться текущей загрузки и конвертации; новые задачи продолжатся после обновления. При ошибке запуска вернётся предыдущая версия.','Finish active downloads and conversions before installing; queued jobs resume after the update. Restore the previous release if startup fails.'],
     ['Ожидание завершения загрузки и конвертации','Waiting for downloads and conversions to finish'],
     ['Обновление ожидает завершения видео; повторите загрузку позже','Update waiting for video tasks; try uploading again later'],
     // Dynamic states, dialogs and notification phrases

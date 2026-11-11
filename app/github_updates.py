@@ -135,17 +135,17 @@ def install_from_catalog(module_id: str):
         return bundles.install_module_directory(source), sha
 
 
-AUTO_CHECK_SECONDS = 3600
-
 
 def auto_update_tick() -> None:
-    """Check only main, at most hourly; never retry a failed revision automatically."""
+    """Check main at the configured interval; never automatically retry a failed SHA."""
     update_control.promote()
-    if not settings().get("auto_update_enabled", False) or update_control.paused():
+    config = settings()
+    if not config.get("auto_update_enabled", False) or update_control.paused():
         return
     now = time.time()
     previous = read_json(DATA / "auto_update_status.json")
-    if now - previous.get("checked_at", 0) < AUTO_CHECK_SECONDS:
+    interval_seconds = config.get("auto_update_interval_minutes", 60) * 60
+    if now - previous.get("checked_at", 0) < interval_seconds:
         return
     result = {"checked_at": now}
     # Persist before networking, so repeated network errors cannot cause a hot loop.

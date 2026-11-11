@@ -38,6 +38,7 @@ DEFAULTS = {
     'enabled_modules': {},
     'local_videos_enabled': True,
     'auto_update_enabled': False,
+    'auto_update_interval_minutes': 60,
     'online_sources': {'apple': True, 'nasa': True},
     'online_cache_enabled': True,
     'online_autodownload_enabled': True,
@@ -132,6 +133,9 @@ def update_settings(new: dict) -> dict:
                 'local_videos_enabled', 'online_autodownload_enabled', 'auto_update_enabled'):
         if not isinstance(result[key], bool):
             raise ValueError(f'Параметр {key} должен быть логическим')
+    interval = result['auto_update_interval_minutes']
+    if type(interval) is not int or interval < 1:
+        raise ValueError('Интервал автообновления должен быть целым числом минут не меньше 1')
     if result['clock_position'] not in ('bottom-left', 'bottom-center', 'center', 'top-right'):
         raise ValueError('Неверное расположение часов')
     if str(result['time_format']) not in ('12', '24'):

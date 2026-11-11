@@ -148,3 +148,40 @@ def test_pending_media_request_is_promoted_even_after_auto_updates_disabled(isol
     monkeypatch.setattr(github_updates, "settings", lambda: {"auto_update_enabled": False})
     github_updates.auto_update_tick()
     assert (isolated / "pending_update.json").exists()
+
+
+@pytest.mark.parametrize("interval", [0, -1, 1.5, True, "60"])
+def test_update_interval_rejects_non_positive_or_non_integer(isolated, monkeypatch, interval):
+    monkeypatch.setattr(storage, "DATA", isolated)
+    with pytest.raises(ValueError, match="Интервал"):
+        storage.update_settings({"auto_update_interval_minutes": interval})
+
+
+def test_update_interval_defaults_to_hour_and_persists_minutes(isolated, monkeypatch):
+    monkeypatch.setattr(storage, "DATA", isolated)
+    assert storage.settings()["auto_update_interval_minutes"] == 60
+    storage.update_settings({"auto_update_interval_minutes": 15})
+    assert storage.settings()["auto_update_interval_minutes"] == 15
+
+
+def test_auto_check_uses_configured_minutes_and_reacts_to_interval_change(isolated, monkeypatch):
+    now = [10000]
+    config = {"auto_update_enabled": True, "auto_update_interval_minutes": 120}
+    calls = []
+    monkeypatch.setattr(github_updates.time, "time", lambda: now[0])
+    monkeypatch.setattr(github_updates, "settings", lambda: config)
+    monkeypatch.setattr(github_updates, "remote_revision", lambda: calls.append(1) or "a" * 40)
+    monkeypatch.setattr(github_updates, "installed_revision", lambda: "a" * 40)
+    github_updates.auto_update_tick()
+    now[0] += 3600
+    github_updates.auto_update_tick()
+    assert len(calls) == 1
+    config["auto_update_interval_minutes"] = 15
+    github_updates.auto_update_tick()
+    assert len(calls) == 2
+    now[0] += 15 * 60 - 1
+    github_updates.auto_update_tick()
+    assert len(calls) == 2
+    now[0] += 1
+    github_updates.auto_update_tick()
+    assert len(calls) == 3
