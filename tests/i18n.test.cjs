@@ -89,3 +89,11 @@ test('geocoder city choice fills name, coordinates and IANA zone', async()=>{
   assert.equal(form.elements.timezone.value,'Europe/London');
   assert.equal(item('locationStatus').textContent,'Город выбран. Сохраните настройки.');
 });
+
+
+test('ready library summary translates completely',()=>{
+  const {i18n}=makeLocalization();
+  i18n.setLocale('en');
+  assert.equal(i18n.translate('Готово: 38 · удалено, но сохранено в истории: 0 · всего на диске: 4.37 ГБ'),
+    'Ready: 38 · deleted, retained in history: 0 · total on disk: 4.37 GB');
+});

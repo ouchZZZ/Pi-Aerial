@@ -204,7 +204,7 @@ def _clip(provider: str, source_id: str, url: str, title: str,
             "page": page if page.startswith("https://") else ""}
 
 
-def _apple_manifest() -> tuple[dict | list, dict]:
+def _apple_manifest() -> tuple[dict | list, dict, dict]:
     """Safely parse Apple's tvOS 26 TAR feed without extracting files to disk."""
     req = urllib.request.Request(
         SOURCE_URLS["apple"],
@@ -252,12 +252,14 @@ def _apple_manifest() -> tuple[dict | list, dict]:
         raise ValueError("Apple TAR не содержит entries.json")
 
     raw = entries_from_tar(payload)
-    return raw, {**translations.get('en.lproj', {}), **translations.get('ru.lproj', {})}
+    return (raw, {**translations.get('en.lproj', {}), **translations.get('ru.lproj', {})},
+            translations.get('en.lproj', {}))
 
 
 def _apple() -> list[dict]:
     manifest = _apple_manifest()
-    raw, strings = manifest if isinstance(manifest, tuple) else (manifest, {})
+    raw, strings = manifest[:2] if isinstance(manifest, tuple) else (manifest, {})
+    english = manifest[2] if isinstance(manifest, tuple) and len(manifest) > 2 else {}
     entries = raw if isinstance(raw, list) else (
         raw.get("assets") or raw.get("entries") or [])
     if not isinstance(entries, list):
@@ -315,6 +317,18 @@ def _apple() -> list[dict]:
         clip = _clip("apple", source_id, selected, title,
                      "Apple Aerial", "https://www.apple.com/tv/", description)
         if clip:
+            clip["name_en"] = _description(english.get(name_key)) or str(
+                e.get("name") or e.get("accessibilityLabel") or source_id)[:110]
+            english_captions = [
+                (int(second), _description(english.get(key)))
+                for second, key in (points.items() if isinstance(points, dict) else [])
+                if isinstance(second, str) and re.fullmatch(r"[0-9]{1,6}", second)
+                and isinstance(key, str) and _description(english.get(key))
+            ]
+            english_captions.sort()
+            clip["description_en"] = (
+                english_captions[0][1] if english_captions else
+                _description(e.get("description")))
             if captions:
                 clip['captions'] = captions
             result.append(clip)

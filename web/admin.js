@@ -216,7 +216,9 @@ function playOnceButton(source,name){
   });
   return button;
 }
+let libraryVideos=[];
 function renderLibrary(onlineVideos){
+  libraryVideos=onlineVideos;
   const onlineRoot=$('onlineLibraryList'),localRoot=$('localLibraryList');
   onlineRoot.replaceChildren();
   localRoot.replaceChildren();
@@ -229,13 +231,16 @@ function renderLibrary(onlineVideos){
       v.provider==='nasa'?'NASA':v.provider;
     const state=v.cached?'Готов к просмотру · '+progressSize(v.bytes):
       'MP4 удалён · повторная загрузка заблокирована';
-    const row=line(v.name,provider+' · '+state);
-    if(v.description)row.firstChild.append(textNode('p',v.description,'library-description'));
+    const english=PiI18n.language==='en';
+    const name=english?(v.name_en||v.name):v.name;
+    const description=english?(v.description_en||v.description):v.description;
+    const row=line(name,provider+' · '+state);
+    if(description)row.firstChild.append(textNode('p',description,'library-description'));
     const controls=document.createElement('div');controls.className='inline-actions library-actions';
     if(v.cached){
       const preview=textNode('button','Просмотр');
       preview.addEventListener('click',()=>openLibraryPreview(
-        v.name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview'));
+        name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview'));
       const remove=textNode('button','Удалить файл');
       remove.addEventListener('click',async()=>{
         if(!ask('Удалить готовый MP4? Запрет повторной загрузки останется.'))return;
@@ -315,6 +320,7 @@ PiLocationPicker.init(api);
 $('languageSelect').addEventListener('change',async()=>{
   const language=$('languageSelect').value==='en'?'en':'ru';
   PiI18n.setLocale(language);
+  if(status)renderLibrary(libraryVideos);
   if(!csrf){pendingLanguage=language;return;}
   try{
     await api('/api/admin/config',{method:'PUT',body:{changes:{language}}});
@@ -325,6 +331,7 @@ $('languageSelect').addEventListener('change',async()=>{
     if(status){
       $('languageSelect').value=status.config.language||'ru';
       PiI18n.setLocale(status.config.language||'ru');
+      renderLibrary(libraryVideos);
     }
   }
 });

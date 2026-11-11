@@ -247,6 +247,8 @@
     ['Нужен ffmpeg для подготовки видео','ffmpeg is required for video preparation'],
     ['Недостаточно места для преобразования видео','Insufficient space to convert video'],
     ['Кеш заполнен во время подготовки нового видео','Cache filled while preparing a new video'],
+    [' · удалено, но сохранено в истории: ',' · deleted, retained in history: '],
+    [' · всего на диске: ',' · total on disk: '],
     // Dynamic states, dialogs and notification phrases
     ['Объём ','Capacity '],
     ['Идёт установка','Installing'],
