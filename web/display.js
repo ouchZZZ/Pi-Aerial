@@ -198,6 +198,8 @@ function reportPlaybackFailure(attempt,err){
 }
 function changeVideo(){
   clearTimeout(changeTimer);
+  // Return to silent screensaver mode immediately, including early stop/failure.
+  video.muted=true;
   if(playingOnce){
     videoPresented=false;
     document.body.classList.add('media-transition');
@@ -256,6 +258,9 @@ function playVideo(clip){
     setText('clipName',clip.credit||displayText('ВИДЕОЗАСТАВКА','VIDEO SCREENSAVER'));
     renderClipDescription(0);
     video.classList.remove('ready');
+    // Only an explicit "play once" command from the admin panel may use audio.
+    // Set this before loading the source: transitions reuse the same <video>.
+    video.muted=!playingOnce;
     video.src=clip.url;
     video.load();
     startupTimer=setTimeout(()=>reportPlaybackFailure(attempt,
