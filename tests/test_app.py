@@ -99,6 +99,10 @@ def test_kiosk_referrer_policy_allows_youtube_without_exposing_api_urls(monkeypa
             page = client.get(route)
             assert page.status_code == 200
             assert page.headers['referrer-policy'] == 'strict-origin-when-cross-origin'
+            if route == '/':
+                assert page.headers['permissions-policy'] == 'camera=(), microphone=()'
+            else:
+                assert 'permissions-policy' not in page.headers
         assert client.get('/').headers['cache-control'] == 'no-store'
         for route in ('/api/health', '/api/display/play-once', '/assets/display.js'):
             response = client.get(route)
