@@ -129,6 +129,7 @@
     ['Готовые видео','Prepared videos'],
     ['Все сконвертированные файлы и история роликов, которые уже скачивали.','All converted videos and previously downloaded item history.'],
     ['Остановить разовый показ','Stop one-time playback'],
+    ['Видеозаставка воспроизводится без звука. Кнопки «Просмотр» и «Показать один раз без OSD» включают звук, если он есть в файле.','Screensaver playback is muted. Preview and Play once without OSD enable sound when the file contains audio.'],
     ['Онлайн-ролики Apple и NASA','Apple and NASA online videos'],
     ['Обновить список','Refresh list'],
     ['Получаю данные видеотеки…','Loading video library…'],

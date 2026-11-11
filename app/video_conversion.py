@@ -240,7 +240,8 @@ def _normalize_video_locked(source: Path, output: Path, max_bytes: int | None,
     copy = not force_transcode and can_stream_copy(stream)
     common = [
         "nice", "-n", "15", ffmpeg, "-hide_banner", "-loglevel", "error",
-        "-nostdin", "-y", "-i", str(source), "-map", "0:v:0", "-an", "-sn", "-dn",
+        "-nostdin", "-y", "-i", str(source),
+        "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
     ]
     if copy:
         encoder = ["-c:v", "copy"]
@@ -258,7 +259,12 @@ def _normalize_video_locked(source: Path, output: Path, max_bytes: int | None,
             "-threads", "2", "-profile:v", "main", "-level:v", "4.0",
             "-maxrate", "4500k", "-bufsize", "9000k",
         ]
-    command = common + encoder + ["-movflags", "+faststart", str(output)]
+    # Preserve the first audio track when present. AAC is widely supported by
+    # Chromium in MP4, while the '?' keeps silent Apple/NASA clips valid.
+    command = common + encoder + [
+        "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+        "-movflags", "+faststart", str(output),
+    ]
     duration = probe_duration(source)
     _emit(on_progress, stage="converting",
           mode="copy" if copy else "transcode", duration_s=duration)

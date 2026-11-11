@@ -200,6 +200,8 @@ async function loadLibrary(){
 function openLibraryPreview(title,url){
   const dialog=$('libraryPreviewDialog'),player=$('libraryPreviewPlayer');
   $('libraryPreviewTitle').textContent=title;
+  // Preview is an explicit administrator action, unlike silent screen rotation.
+  player.muted=false;
   player.src=url;
   dialog.showModal();
   player.play().catch(()=>{});

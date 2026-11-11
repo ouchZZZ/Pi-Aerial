@@ -98,3 +98,16 @@ def test_normalization_requires_ffmpeg(monkeypatch, tmp_path):
     monkeypatch.setattr(vc.shutil, "which", lambda command: None)
     with pytest.raises(ValueError, match="ffmpeg"):
         vc.normalize_video(tmp_path / "in.part", tmp_path / "out.mp4")
+
+
+def test_mp4_keeps_optional_audio_as_stereo_aac(monkeypatch, tmp_path):
+    src, dest, calls = _fake_convert(monkeypatch, tmp_path, AVC)
+    assert vc.normalize_video(src, dest) == "copy"
+    command, _ = calls[0]
+    maps = [command[i + 1] for i, arg in enumerate(command[:-1]) if arg == "-map"]
+    assert maps == ["0:v:0", "0:a:0?"]
+    assert "-an" not in command
+    assert command[command.index("-c:v") + 1] == "copy"
+    assert command[command.index("-c:a") + 1] == "aac"
+    assert command[command.index("-b:a") + 1] == "128k"
+    assert command[command.index("-ac") + 1] == "2"

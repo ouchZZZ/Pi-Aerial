@@ -44,6 +44,7 @@ function makeHarness(search = '') {
   video.pauseCalls = 0;
   video.pending = [];
   video.error = null;
+  video.muted = true; // <video muted> in the real display HTML.
   Object.defineProperty(video, 'src', {
     get() { return video._src; },
     set(value) { video._src = value; video._hasSrc = true; },
@@ -141,6 +142,7 @@ test('one-shot skips the rotation timer and restores OSD and playlist on end or 
   h.publicState.displayRequest = {id: 'once', url: '/api/display/play-once/once'};
   await h.context.pollDisplayRequest();
   assert.equal(h.video.src, h.publicState.displayRequest.url);
+  assert.equal(h.video.muted, false);
   assert.ok(h.bodyClasses.has('playing-once'));
   assert.ok(rotation.cleared);
   h.video.pending.at(-1).resolve();
@@ -152,6 +154,7 @@ test('one-shot skips the rotation timer and restores OSD and playlist on end or 
   assert.equal(h.video.src, h.publicState.displayRequest.url);
   h.video.dispatch('ended'); h.finishFade();
   assert.equal(h.video.src, '/media/second.mp4');
+  assert.equal(h.video.muted, true);
   assert.ok(!h.bodyClasses.has('playing-once'));
   await h.context.pollDisplayRequest();
   assert.equal(h.video.src, '/media/second.mp4');
@@ -161,6 +164,7 @@ test('one-shot skips the rotation timer and restores OSD and playlist on end or 
   h.video.pending.at(-1).reject(new Error('Format unsupported'));
   await settle();
   assert.equal(h.video.src, '/media/first.mp4');
+  assert.equal(h.video.muted, true);
   assert.ok(!h.bodyClasses.has('playing-once'));
 });
 
@@ -191,6 +195,7 @@ test('stop cancels an active one-shot and leaves regular rotation alone', async 
   h.publicState.displayRequest = {stop: true};
   await h.context.pollDisplayRequest();
   assert.equal(h.video.src, '/media/normal.mp4');
+  assert.equal(h.video.muted, true);
   assert.ok(!h.bodyClasses.has('playing-once'));
   const loadCalls = h.video.loadCalls;
   oneShot.reject(new Error('Playback interrupted'));
@@ -563,4 +568,46 @@ test('rotation interval starts after first frame rather than while loading', asy
   assert.equal(h.timers.filter(t=>t.ms===60000&&!t.cleared).length,0);
   present();
   assert.equal(h.timers.filter(t=>t.ms===60000&&!t.cleared).length,1);
+});
+
+
+test('screensaver stays muted on rotation; manual play-once is audible until stopped', async()=>{
+  const h=await ready();
+  h.publicState.videos=[
+    {id:'a',url:'/media/a.mp4'},
+    {id:'b',url:'/media/b.mp4'},
+  ];
+  await h.context.poll();
+  assert.equal(h.video.muted,true);
+  h.video.pending[0].resolve();
+  await settle();
+
+  h.video.dispatch('ended');
+  h.finishFade();
+  assert.equal(h.video.src,'/media/b.mp4');
+  assert.equal(h.video.muted,true);
+
+  h.publicState.displayRequest={id:'manual',url:'/api/display/play-once/manual'};
+  await h.context.pollDisplayRequest();
+  assert.equal(h.video.src,'/api/display/play-once/manual');
+  assert.equal(h.video.muted,false);
+  assert.equal(h.bodyClasses.has('playing-once'),true);
+
+  h.publicState.displayRequest={stop:true};
+  await h.context.pollDisplayRequest();
+  assert.equal(h.video.muted,true);
+  assert.equal(h.video.src,'/media/a.mp4');
+  assert.equal(h.bodyClasses.has('playing-once'),false);
+});
+
+test('manual play-once failure restores silence even with no available playlist', async()=>{
+  const h=await ready();
+  h.publicState.displayRequest={id:'only-once',url:'/api/display/play-once/only-once'};
+  await h.context.pollDisplayRequest();
+  assert.equal(h.video.muted,false);
+
+  h.video.pending.at(-1).reject(new Error('Video unavailable'));
+  await settle();
+  assert.equal(h.video.muted,true);
+  assert.equal(h.bodyClasses.has('playing-once'),false);
 });
