@@ -74,3 +74,9 @@
 .layout-color-value{color:#718492;font-size:12px;align-self:center}
 .layout-style-hint{margin:0 0 15px}
 @media(max-width:750px){.layout-font-controls label:first-child,.layout-font-controls select{min-width:180px}}
+
+/* URL playback is a one-shot action, not a stored download. */
+.url-play-form{display:flex;align-items:end;gap:14px;flex-wrap:wrap}
+.url-play-form label{flex:1 1 350px;margin:0}
+.url-play-form button{flex:0 0 auto}
+@media(max-width:650px){.url-play-form button{width:100%}}
