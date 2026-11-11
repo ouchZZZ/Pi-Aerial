@@ -78,11 +78,14 @@ app.mount('/assets', StaticFiles(directory=WEB), name='assets')
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    # The interactive OSM map requires an Origin/Referer on tile requests.
-    # Send only the site's origin (never the admin path or credentials).
+    # The OSM map and YouTube's official iframe player require an HTTP Referer.
+    # Only the public display and admin documents may send their origin across
+    # sites. Keep private API endpoints and media URLs at no-referrer.
+    # YouTube error 153 is triggered when the display suppresses this header.
     response.headers['Referrer-Policy'] = ('strict-origin-when-cross-origin'
-                                            if request.url.path == '/admin' else 'no-referrer')
-    response.headers.setdefault('Cache-Control', 'no-store' if request.url.path.startswith(('/api/', '/assets/', '/admin')) else 'public, max-age=300')
+                                            if request.url.path in ('/', '/admin') else 'no-referrer')
+    # An updated kiosk document must not reuse a stale referrer policy.
+    response.headers.setdefault('Cache-Control', 'no-store' if request.url.path == '/' or request.url.path.startswith(('/api/', '/assets/', '/admin')) else 'public, max-age=300')
     if request.url.path.startswith('/admin'):
         response.headers['X-Frame-Options'] = 'DENY'
     return response
