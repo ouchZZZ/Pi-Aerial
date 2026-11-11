@@ -12,6 +12,7 @@ import urllib.error
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 from zoneinfo import available_timezones
 from urllib.parse import quote
 
@@ -32,6 +33,7 @@ VIDEO_EXTENSIONS = {'.mp4', '.webm', '.m4v', '.mov', '.mkv'}
 DISPLAY_REQUEST_WINDOW = 30
 DISPLAY_MEDIA_WINDOW = 24 * 60 * 60
 DISPLAY_REQUESTS: dict[str, tuple[float, str, str]] = {}
+DISPLAY_PLAYBACK_STATUS: dict[str, object] = {}
 
 
 @asynccontextmanager
@@ -149,6 +151,12 @@ class PlayURL(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
 
 
+class PlayReport(BaseModel):
+    id: str = Field(min_length=8, max_length=128)
+    stage: Literal['starting', 'api_ready', 'playing', 'ended', 'error']
+    detail: str = Field(default='', max_length=160)
+
+
 def ready_display_video(source: str, name: str) -> Path:
     if source == 'local':
         return ready_local_video(name)
@@ -168,6 +176,7 @@ def request_display_video(source: str, name: str, _: None = Depends(auth.require
             if now - created >= DISPLAY_MEDIA_WINDOW:
                 del DISPLAY_REQUESTS[token]
         DISPLAY_REQUESTS[secrets.token_urlsafe(24)] = (now, source, name)
+        DISPLAY_PLAYBACK_STATUS.clear()
     return {'ok': True}
 
 
@@ -184,6 +193,10 @@ def request_display_url(payload: PlayURL, _: None = Depends(auth.require_admin))
                 del DISPLAY_REQUESTS[token]
         DISPLAY_REQUESTS[secrets.token_urlsafe(24)] = (
             now, resolved.provider, resolved.video_id)
+        DISPLAY_PLAYBACK_STATUS.clear()
+        DISPLAY_PLAYBACK_STATUS.update({
+            'provider': resolved.provider, 'stage': 'requested',
+            'detail': '', 'updated_at': int(time.time())})
     return {'ok': True, 'provider': resolved.provider}
 
 
@@ -191,6 +204,32 @@ def request_display_url(payload: PlayURL, _: None = Depends(auth.require_admin))
 def stop_display_video(_: None = Depends(auth.require_admin)):
     with LOCK:
         DISPLAY_REQUESTS.clear()
+        if DISPLAY_PLAYBACK_STATUS:
+            DISPLAY_PLAYBACK_STATUS.update({'stage': 'stopped', 'detail': '', 'updated_at': int(time.time())})
+    return {'ok': True}
+
+
+@app.get('/api/admin/display/play-once/status')
+def display_playback_status(_: None = Depends(auth.require_admin)):
+    with LOCK:
+        return {'status': dict(DISPLAY_PLAYBACK_STATUS) if DISPLAY_PLAYBACK_STATUS else None}
+
+
+@app.post('/api/display/play-once/report')
+def display_playback_report(report: PlayReport):
+    # This endpoint is write-only for the kiosk. The bearer token comes from
+    # the already-public playback command and never authorizes admin actions.
+    # Ignore stale reports from a previous iframe after a stop or new request.
+    with LOCK:
+        token = next(reversed(DISPLAY_REQUESTS), None)
+        command = DISPLAY_REQUESTS.get(report.id)
+        if token != report.id or command is None or command[1] not in video_sources.providers():
+            raise HTTPException(404)
+        if time.monotonic() - command[0] >= DISPLAY_MEDIA_WINDOW:
+            raise HTTPException(404)
+        DISPLAY_PLAYBACK_STATUS.update({
+            'provider': command[1], 'stage': report.stage,
+            'detail': report.detail, 'updated_at': int(time.time())})
     return {'ok': True}
 
 

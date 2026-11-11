@@ -72,7 +72,29 @@ def test_url_playback_requires_admin_and_respects_stop(monkeypatch):
             assert command["video_id"] == "dQw4w9WgXcQ"
             assert "url" not in command  # Never expose raw arbitrary external URLs.
             assert client.get("/api/display/play-once/" + command["id"]).status_code == 404
+            status_endpoint = "/api/admin/display/play-once/status"
+            assert client.get(status_endpoint).json()["status"]["stage"] == "requested"
+            report_endpoint = "/api/display/play-once/report"
+            assert client.post(report_endpoint, json={"id": "unknown-token", "stage": "error"}).status_code == 404
+            assert client.post(report_endpoint, json={
+                "id": command["id"], "stage": "playing"
+            }).status_code == 200
+            assert client.get(status_endpoint).json()["status"]["stage"] == "playing"
+            assert client.post(report_endpoint, json={
+                "id": command["id"], "stage": "error", "detail": "YouTube error 153"
+            }).status_code == 200
+            assert client.get(status_endpoint).json()["status"]["detail"] == "YouTube error 153"
+            assert client.post(report_endpoint, json={
+                "id": command["id"], "stage": "error", "detail": "x" * 200
+            }).status_code == 422
+            assert client.post(report_endpoint, json={
+                "id": command["id"], "stage": "invalid"
+            }).status_code == 422
             assert client.post("/api/admin/display/play-once/stop", headers=csrf).status_code == 200
+            assert client.get(status_endpoint).json()["status"]["stage"] == "stopped"
+            assert client.post(report_endpoint, json={
+                "id": command["id"], "stage": "error", "detail": "stale"
+            }).status_code == 404
             assert client.get("/api/display/play-once").json() == {"stop": True}
     finally:
         with main.LOCK:
