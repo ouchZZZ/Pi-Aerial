@@ -1,6 +1,7 @@
 """Online catalogs, sequential preparation and durable processed history.
 
-Apple videos are downloaded one at a time and transcoded for Raspberry Pi.
+Apple videos are downloaded one at a time and normalized for Raspberry Pi.
+Compatible H.264 is remuxed without lossy re-encoding.
 At the configured cache limit the worker pauses without evicting ready videos.
 """
 from __future__ import annotations
@@ -49,6 +50,8 @@ DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 ACTIVE: set[str] = set()
 CACHE_WORKERS: dict[threading.Thread, threading.Event | None] = {}
 CACHE_FAILED_UNTIL: dict[str, float] = {}
+# This marker describes playback compatibility, not CRF or encoder settings.
+# Keep it stable so a quality update never invalidates the existing cache.
 CACHE_PROFILE = "h264-1080p30-8bit-v1"
 
 
@@ -666,7 +669,7 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                     raise ValueError("Недостаточно места для преобразования видео")
                 print(f"[online] preparing {provider}: {ident} "
                       f"({total // 1024 // 1024} МБ исходник)", flush=True)
-                kwargs = {"max_bytes": file_limit, "force_transcode": True,
+                kwargs = {"max_bytes": file_limit,
                           "on_progress": lambda **fields: video_progress.conversion(
                               "online", ident, **fields)}
                 if stop is not None:
