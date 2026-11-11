@@ -38,6 +38,7 @@ function makeHarness(search = '') {
     }
     return elements.get(id);
   }
+  element('externalLayer').hidden = true; // The actual display markup starts hidden.
   const video = element('video');
   video._hasSrc = false;
   video.loadCalls = 0;
@@ -692,7 +693,7 @@ test('Malformed external video descriptors cannot inject a player URL', async()=
     id:'yt-malformed',kind:'embed',provider:'youtube',video_id:'../javascript'
   };
   await h.context.pollDisplayRequest();
-  assert.equal(h.elements.get('externalLayer').hidden,false === true);
+  assert.equal(h.elements.get('externalLayer').hidden,true);
   assert.equal(h.video.src,'/media/rotation.mp4');
   assert.equal(h.bodyClasses.has('playing-once'),false);
 });
