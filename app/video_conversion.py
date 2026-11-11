@@ -116,7 +116,8 @@ def _parse_out_time(fields: dict) -> float | None:
 
 
 def _run_with_progress(command: list[str], timeout: int,
-                       callback, duration: float | None) -> None:
+                       callback, duration: float | None,
+                       stop: threading.Event | None = None) -> None:
     """Stop after two consecutive idle windows, never for total runtime."""
     args = command[:-1] + ["-progress", "pipe:1", "-nostats", command[-1]]
     process = subprocess.Popen(
@@ -171,6 +172,10 @@ def _run_with_progress(command: list[str], timeout: int,
     try:
         warned_at = None
         while True:
+            if stop is not None and stop.is_set():
+                process.kill()
+                process.wait(timeout=10)
+                raise InterruptedError("Конвертация остановлена")
             try:
                 code = process.wait(timeout=1)
                 break
@@ -202,17 +207,32 @@ def _run_with_progress(command: list[str], timeout: int,
 
 
 def normalize_video(source: Path, output: Path, max_bytes: int | None = None,
-                    on_progress=None, *, force_transcode: bool = False) -> str:
-    """Serialize all video work, reporting time spent waiting for the slot."""
+                    on_progress=None, *, force_transcode: bool = False,
+                    stop: threading.Event | None = None) -> str:
+    """Serialize conversion; background tasks can cancel while waiting."""
     _emit(on_progress, stage="waiting")
-    with CONVERSION_SLOT:
-        return _normalize_video_locked(source, output, max_bytes, on_progress,
-                                       force_transcode=force_transcode)
+    if stop is None:
+        with CONVERSION_SLOT:
+            return _normalize_video_locked(source, output, max_bytes, on_progress,
+                                           force_transcode=force_transcode)
+    while not stop.is_set():
+        if CONVERSION_SLOT.acquire(timeout=0.5):
+            try:
+                if stop.is_set():
+                    raise InterruptedError("Конвертация остановлена")
+                return _normalize_video_locked(source, output, max_bytes, on_progress,
+                                               force_transcode=force_transcode, stop=stop)
+            finally:
+                CONVERSION_SLOT.release()
+    raise InterruptedError("Конвертация остановлена")
 
 
 def _normalize_video_locked(source: Path, output: Path, max_bytes: int | None,
-                            on_progress=None, *, force_transcode=False) -> str:
+                            on_progress=None, *, force_transcode=False,
+                            stop: threading.Event | None = None) -> str:
     """Create complete faststart MP4; return 'copy' or 'transcode'."""
+    if stop is not None and stop.is_set():
+        raise InterruptedError("Конвертация остановлена")
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise ValueError("ffmpeg не установлен: sudo apt install -y ffmpeg")
@@ -242,7 +262,14 @@ def _normalize_video_locked(source: Path, output: Path, max_bytes: int | None,
     duration = probe_duration(source)
     _emit(on_progress, stage="converting",
           mode="copy" if copy else "transcode", duration_s=duration)
-    _run_with_progress(command, 1200, on_progress, duration)
+    if stop is None:
+        _run_with_progress(command, 1200, on_progress, duration)
+    else:
+        if stop.is_set():
+            raise InterruptedError("Конвертация остановлена")
+        _run_with_progress(command, 1200, on_progress, duration, stop=stop)
+        if stop.is_set():
+            raise InterruptedError("Конвертация остановлена")
     _emit(on_progress, stage="finalizing", mode="copy" if copy else "transcode")
     with output.open("rb") as result:
         header = result.read(12)

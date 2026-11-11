@@ -62,4 +62,7 @@ def promote() -> None:
             (DATA / "update_request.json").unlink(missing_ok=True)
             return
         if ready():
-            atomic_json(DATA / "pending_update.json", queued["payload"])
+            payload = dict(queued["payload"])
+            if queued.get("automatic") is True:
+                payload["_automatic"] = True
+            atomic_json(DATA / "pending_update.json", payload)

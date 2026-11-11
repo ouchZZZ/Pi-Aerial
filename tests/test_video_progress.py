@@ -193,3 +193,13 @@ def test_idle_watchdog_checks_twice_and_resets_on_advance(monkeypatch, events, s
     else:
         vc._run_with_progress(["ffmpeg", "out.mp4"], 1200, None, None)
     assert process.killed is stalls
+
+
+def test_cancelled_conversion_does_not_start_ffmpeg(monkeypatch, tmp_path):
+    import threading
+    stop = threading.Event()
+    stop.set()
+    monkeypatch.setattr(vc, "probe_video",
+                        lambda source: pytest.fail("Stopped conversion probed video"))
+    with pytest.raises(InterruptedError, match="остановлена"):
+        vc.normalize_video(tmp_path / "input.mp4", tmp_path / "out.mp4", stop=stop)

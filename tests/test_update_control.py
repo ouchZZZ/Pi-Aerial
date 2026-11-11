@@ -125,6 +125,7 @@ def test_auto_update_queues_new_revision_but_never_retries_failed_sha(isolated, 
     monkeypatch.setattr(github_updates, "remote_revision", lambda: "c" * 40)
     github_updates.auto_update_tick()
     assert read_json(isolated / "pending_update.json")["revision"] == "c" * 40
+    assert read_json(isolated / "pending_update.json")["_automatic"] is True
     assert read_json(isolated / "update_request.json")["automatic"] is True
 
 

@@ -37,7 +37,8 @@ def test_unhealthy_core_update_rolls_back(monkeypatch, tmp_path):
     assert not (data / 'pending_update.json').exists()
 
 
-def test_busy_media_defers_without_staging_restart_or_failure(monkeypatch, tmp_path):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_busy_media_defers_without_staging_restart_or_failure(monkeypatch, tmp_path, automatic):
     spec = importlib.util.spec_from_file_location('deferred_helper',
         Path(__file__).parents[1] / 'tools' / 'apply_core_update.py')
     helper = importlib.util.module_from_spec(spec)
@@ -48,7 +49,8 @@ def test_busy_media_defers_without_staging_restart_or_failure(monkeypatch, tmp_p
     data = tmp_path / 'data'
     data.mkdir()
     payload = {'source': 'github', 'revision': 'a' * 40}
-    (data / 'pending_update.json').write_text(json.dumps(payload))
+    pending = {**payload, '_automatic': True} if automatic else payload
+    (data / 'pending_update.json').write_text(json.dumps(pending))
     for name, value in [('BASE', tmp_path), ('DATA', data),
                         ('PENDING', data / 'pending_update.json'),
                         ('STATUS', data / 'update_status.json')]:
@@ -59,4 +61,6 @@ def test_busy_media_defers_without_staging_restart_or_failure(monkeypatch, tmp_p
     helper.main()
     assert not helper.PENDING.exists()
     assert not helper.STATUS.exists()
-    assert json.loads((data / 'update_request.json').read_text())['payload'] == payload
+    deferred = json.loads((data / 'update_request.json').read_text())
+    assert deferred['payload'] == payload
+    assert deferred['automatic'] is automatic

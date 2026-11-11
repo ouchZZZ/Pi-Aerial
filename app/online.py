@@ -47,6 +47,7 @@ RESERVE_BYTES = 5 * 1024 ** 3
 LOCK = threading.RLock()
 DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 ACTIVE: set[str] = set()
+CACHE_WORKERS: dict[threading.Thread, threading.Event | None] = {}
 CACHE_FAILED_UNTIL: dict[str, float] = {}
 CACHE_PROFILE = "h264-1080p30-8bit-v1"
 
@@ -415,7 +416,7 @@ def _nasa() -> list[dict]:
 FETCHERS = {"apple": _apple, "nasa": _nasa}
 
 
-def refresh_catalog(force=False) -> None:
+def refresh_catalog(force=False, stop: threading.Event | None = None) -> None:
     """Never drop last successful entries due to a transient API outage."""
     with LOCK:
         current = read_json(CATALOG_FILE)
@@ -424,6 +425,8 @@ def refresh_catalog(force=False) -> None:
     cfg = settings()
     changed = False
     for name, fetch in FETCHERS.items():
+        if stop is not None and stop.is_set():
+            break
         if not cfg["online_sources"].get(name, False):
             continue
         state = dict(sources.get(name, {}))
@@ -451,7 +454,10 @@ def refresh_catalog(force=False) -> None:
         if name in ("apple", "nasa"):
             with LOCK:
                 atomic_json(CATALOG_FILE, {"sources": sources})
-            warm_cache()
+            if stop is None:
+                warm_cache()
+            elif not stop.is_set():
+                warm_cache(stop=stop)
     if changed:
         with LOCK:
             atomic_json(CATALOG_FILE, {"sources": sources})
@@ -580,8 +586,10 @@ def cache_status() -> dict:
         free = shutil.disk_usage(disk_path).free
     except OSError:
         pass
-    # Each source/output may consume at most half the remaining cache quota.
-    file_limit = max(0, limit - used) // 2
+    # Both the source and converted output coexist on disk.
+    quota_budget = max(0, limit - used) // 2
+    disk_budget = max(0, free - RESERVE_BYTES) // 2 if free is not None else 0
+    file_limit = min(quota_budget, disk_budget)
     limit_paused = file_limit < 1024
     # Keep the existing disk reserve; source and output temporarily coexist.
     disk_paused = free is None or free < RESERVE_BYTES + 2048
@@ -592,17 +600,18 @@ def cache_status() -> dict:
         "max_limit_gb": max_online_cache_gb(),
         "file_limit_bytes": file_limit,
         "paused": limit_paused or disk_paused,
-        "pause_reason": "limit" if limit_paused else ("disk" if disk_paused else None),
+        "pause_reason": "disk" if disk_paused else ("limit" if limit_paused else None),
     }
 
 
-def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None) -> None:
+def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
+                  stop: threading.Event | None = None) -> None:
     # Keep the acquired semaphore even if the module global is replaced.
     slot = slot if slot is not None else DOWNLOAD_SLOT
     ident = entry["id"]
     with update_control.media_job() as admitted:
         try:
-            if not admitted:
+            if not admitted or (stop is not None and stop.is_set()):
                 return
             cfg = settings()
             if not cfg.get("online_cache_enabled", True):
@@ -635,6 +644,8 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None) -
                         raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
                     video_progress.download("online", ident, 0, length or None)
                     while True:
+                        if stop is not None and stop.is_set():
+                            raise InterruptedError("Фоновая загрузка остановлена")
                         buf = response.read(1024 * 256)
                         if not buf:
                             break
@@ -655,10 +666,16 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None) -
                     raise ValueError("Недостаточно места для преобразования видео")
                 print(f"[online] preparing {provider}: {ident} "
                       f"({total // 1024 // 1024} МБ исходник)", flush=True)
-                mode = normalize_video(
-                    temp, muxed, max_bytes=file_limit, force_transcode=True,
-                    on_progress=lambda **fields: video_progress.conversion(
-                        "online", ident, **fields))
+                kwargs = {"max_bytes": file_limit, "force_transcode": True,
+                          "on_progress": lambda **fields: video_progress.conversion(
+                              "online", ident, **fields)}
+                if stop is not None:
+                    kwargs["stop"] = stop
+                    if stop.is_set():
+                        raise InterruptedError("Фоновая загрузка остановлена")
+                mode = normalize_video(temp, muxed, **kwargs)
+                if stop is not None and stop.is_set():
+                    raise InterruptedError("Фоновая загрузка остановлена")
                 # Other files may be added while we convert. Discard only this
                 # new output if it no longer fits: never evict existing MP4.
                 if _cache_used_bytes() + muxed.stat().st_size > max_bytes:
@@ -674,6 +691,9 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None) -
             finally:
                 temp.unlink(missing_ok=True)
                 muxed.unlink(missing_ok=True)
+        except InterruptedError:
+            # Shutdown is not a failed video; the next start may retry it.
+            video_progress.finish("online", ident, False, "Загрузка остановлена")
         except Exception as exc:
             with LOCK:
                 CACHE_FAILED_UNTIL[ident] = time.time() + 3600
@@ -682,10 +702,13 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None) -
         finally:
             with LOCK:
                 ACTIVE.discard(ident)
+                CACHE_WORKERS.pop(threading.current_thread(), None)
             slot.release()
 
 
-def try_cache(entry: dict) -> None:
+def try_cache(entry: dict, stop: threading.Event | None = None) -> None:
+    if stop is not None and stop.is_set():
+        return
     cfg = settings()
     if (update_control.paused() or not cfg.get("online_autodownload_enabled", True)
             or not cfg.get("online_cache_enabled", True)
@@ -693,7 +716,8 @@ def try_cache(entry: dict) -> None:
         return
     ident = entry["id"]
     with LOCK:
-        if (ident in ACTIVE or cached_file(ident) is not None
+        if ((stop is not None and stop.is_set())
+                or ident in ACTIVE or cached_file(ident) is not None
                 or ident in _processed_ids()
                 or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
             return
@@ -701,11 +725,33 @@ def try_cache(entry: dict) -> None:
         if not slot.acquire(blocking=False):
             return
         ACTIVE.add(ident)
-    threading.Thread(target=_cache_worker, args=(dict(entry), slot), daemon=True).start()
+        worker = threading.Thread(target=_cache_worker,
+                                  args=(dict(entry), slot, stop), daemon=True)
+        CACHE_WORKERS[worker] = stop
+    try:
+        worker.start()
+    except BaseException:
+        with LOCK:
+            CACHE_WORKERS.pop(worker, None)
+            ACTIVE.discard(ident)
+            slot.release()
+        raise
 
 
-def warm_cache() -> None:
+def wait_for_cache_workers(stop: threading.Event, timeout: float = 20) -> None:
+    """Join downloads/conversions spawned by this lifespan only."""
+    with LOCK:
+        workers = [worker for worker, owner in CACHE_WORKERS.items() if owner is stop]
+    deadline = time.monotonic() + timeout
+    for worker in workers:
+        if worker.ident is not None:
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+
+
+def warm_cache(stop: threading.Event | None = None) -> None:
     """Schedule at most one new video; the next starts after full conversion."""
+    if stop is not None and stop.is_set():
+        return
     cfg = settings()
     if (not cfg.get("online_autodownload_enabled", True)
             or not cfg.get("online_cache_enabled", True)
@@ -727,12 +773,17 @@ def warm_cache() -> None:
                 cached_file(e.get("id", "")) is not None for e in candidates) >= 2:
             continue
         for entry in candidates:
+            if stop is not None and stop.is_set():
+                return
             ident = entry.get("id", "")
             if not isinstance(ident, str) or len(ident) != 24 or ident in done:
                 continue
             if cached_file(ident) or CACHE_FAILED_UNTIL.get(ident, 0) > time.time():
                 continue
-            try_cache(entry)
+            if stop is None:
+                try_cache(entry)
+            else:
+                try_cache(entry, stop=stop)
             return
 
 
