@@ -93,7 +93,11 @@ function makeHarness(search = '') {
   };
   vm.createContext(context);
   vm.runInContext(displayJS, context, {filename: 'display.js'});
-  return {context, elements, video, timers, intervals, errors, publicState, bodyClasses};
+  function finishFade(){
+    const timer=timers.find(t=>t.ms===400&&!t.cleared);
+    if(timer){timer.cleared=true;timer.fn();}
+  }
+  return {context, elements, video, timers, intervals, errors, publicState, bodyClasses, finishFade};
 }
 async function settle() {
   await new Promise(resolve => setImmediate(resolve));
@@ -146,7 +150,7 @@ test('one-shot skips the rotation timer and restores OSD and playlist on end or 
   h.publicState.videos.push({url: '/media/second.mp4'});
   await h.context.poll();
   assert.equal(h.video.src, h.publicState.displayRequest.url);
-  h.video.dispatch('ended');
+  h.video.dispatch('ended'); h.finishFade();
   assert.equal(h.video.src, '/media/second.mp4');
   assert.ok(!h.bodyClasses.has('playing-once'));
   await h.context.pollDisplayRequest();
@@ -253,7 +257,7 @@ test('both OSD blocks alternate sides when a video starts playing', async () => 
     assert.equal(isRight('clockCard'), right);
     assert.equal(isRight('clipFooter'), right);
     assert.equal(isRight('calendarCard'), !right);
-    if (index < 2) h.video.dispatch('ended');
+    if (index < 2) {h.video.dispatch('ended'); h.finishFade();}
   }
 });
 
@@ -277,7 +281,7 @@ test('single-position OSD layout remains fixed when videos change', async () => 
   await h.context.poll();
   h.video.pending.at(-1).resolve();
   await settle();
-  h.video.dispatch('ended');
+  h.video.dispatch('ended'); h.finishFade();
   h.video.pending.at(-1).resolve();
   await settle();
   assert.ok(!h.elements.get('clockCard').className.includes('osd-right'));
@@ -316,7 +320,7 @@ test('alternating custom OSD layouts cycle on every successful video start', asy
     assert.equal(h.elements.get('calendarCard').style.transform,'scale('+expected.calendar.scale+')');
     await h.context.poll();
     assert.equal(h.elements.get('clockCard').style.left,expected.clock.x+'%');
-    if(index<2)h.video.dispatch('ended');
+    if(index<2){h.video.dispatch('ended'); h.finishFade();}
   }
 });
 
@@ -348,7 +352,7 @@ test('font and color follow each OSD layout without leaking between blocks', asy
   assert.equal(footer.color,'');
   h.video.pending[0].resolve();
   await settle();
-  h.video.dispatch('ended');
+  h.video.dispatch('ended'); h.finishFade();
   h.video.pending[1].resolve();
   await settle();
   assert.match(clock.fontFamily,/Arial/);
@@ -376,7 +380,7 @@ test('single-position mode uses the default first position without rotating', as
   h.video.pending[0].resolve();
   await settle();
   assert.equal(h.elements.get('clockCard').className,'clock-card');
-  h.video.dispatch('ended');
+  h.video.dispatch('ended'); h.finishFade();
   h.video.pending[1].resolve();
   await settle();
   assert.equal(h.elements.get('clockCard').className,'clock-card');
@@ -449,4 +453,114 @@ test('English UI localizes Moscow, date, weekly forecast and weather details', a
   assert.match(h.elements.get('wxTemp').textContent, /Ясно/);
   assert.match(h.elements.get('wxDetail').textContent, /Ощущается/);
   assert.match(h.elements.get('monthGrid').innerHTML, /Пн/);
+});
+
+test('source and OSD swap under black after fade-out and reveal on first frame', async()=>{
+  const h=await ready();
+  let present;
+  h.video.requestVideoFrameCallback=callback=>{present=callback;return 1;};
+  h.video.cancelVideoFrameCallback=()=>{};
+  h.publicState.videos=[
+    {url:'/media/a',description:'Old caption'},
+    {url:'/media/b',description:'New caption'},
+  ];
+  await h.context.poll();
+  h.video.pending[0].resolve();
+  await settle();
+  assert.ok(h.bodyClasses.has('media-transition'));
+  present();
+  assert.ok(!h.bodyClasses.has('media-transition'));
+  assert.equal(h.elements.get('clipDescription').textContent,'Old caption');
+  h.video.dispatch('ended');
+  assert.ok(h.bodyClasses.has('media-transition'));
+  assert.equal(h.video.src,'/media/a');
+  assert.equal(h.elements.get('clipDescription').textContent,'Old caption');
+  h.finishFade();
+  assert.equal(h.video.src,'/media/b');
+  assert.equal(h.elements.get('clipDescription').textContent,'New caption');
+  h.video.pending[1].resolve();
+  await settle();
+  assert.ok(h.bodyClasses.has('media-transition'));
+  assert.ok(!h.elements.get('clockCard').className.includes('osd-right'));
+  present();
+  assert.ok(!h.bodyClasses.has('media-transition'));
+  assert.ok(h.elements.get('clockCard').className.includes('osd-right'));
+});
+
+test('empty playlist cancels pending source switch and restores idle OSD', async()=>{
+  const h=await ready();
+  h.publicState.videos=[{url:'/media/a'},{url:'/media/b'}];
+  await h.context.poll();
+  h.video.pending[0].resolve();
+  await settle();
+  h.video.dispatch('ended');
+  assert.ok(h.bodyClasses.has('media-transition'));
+  const loads=h.video.loadCalls;
+  h.publicState.videos=[];
+  await h.context.poll();
+  h.finishFade();
+  assert.equal(h.video.loadCalls,loads+1);
+  assert.ok(!h.bodyClasses.has('media-transition'));
+  assert.ok(!h.video.hasAttribute('src'));
+});
+
+test('stale first-frame callback cannot reveal or rotate a newer attempt', async()=>{
+  const h=await ready();
+  const frames=[];
+  h.video.requestVideoFrameCallback=callback=>{frames.push(callback);return frames.length;};
+  h.video.cancelVideoFrameCallback=()=>{};
+  h.publicState.videos=[{url:'/media/a'}];
+  await h.context.poll();
+  h.video.pending[0].resolve();
+  await settle();
+  h.publicState.videos=[{url:'/media/b'}];
+  await h.context.poll();
+  frames[0]();
+  assert.ok(h.bodyClasses.has('media-transition'));
+  h.video.pending[1].resolve();
+  await settle();
+  frames[1]();
+  assert.ok(!h.bodyClasses.has('media-transition'));
+  assert.ok(!h.elements.get('clockCard').className.includes('osd-right'));
+});
+
+test('video startup timeout releases black curtain and schedules fallback', async()=>{
+  const h=await ready();
+  h.publicState.videos=[{url:'/media/a'}];
+  await h.context.poll();
+  h.timers.find(t=>t.ms===15000&&!t.cleared).fn();
+  assert.ok(!h.bodyClasses.has('media-transition'));
+  assert.equal(h.timers.filter(t=>t.ms===4000).length,1);
+});
+
+test('one-shot preempts a pending fade and cancels its delayed playlist load', async()=>{
+  const h=await ready();
+  h.publicState.videos=[{url:'/media/a'},{url:'/media/b'}];
+  await h.context.poll();
+  h.video.pending[0].resolve();
+  await settle();
+  h.video.dispatch('ended');
+  h.publicState.displayRequest={id:'interrupt',url:'/api/display/play-once/interrupt'};
+  await h.context.pollDisplayRequest();
+  h.finishFade();
+  assert.equal(h.video.src,'/api/display/play-once/interrupt');
+  h.video.pending.at(-1).resolve();
+  await settle();
+  assert.ok(h.bodyClasses.has('playing-once'));
+  assert.ok(!h.bodyClasses.has('media-transition'));
+});
+
+test('rotation interval starts after first frame rather than while loading', async()=>{
+  const h=await ready();
+  let present;
+  h.video.requestVideoFrameCallback=callback=>{present=callback;return 1;};
+  h.publicState.settings.video_interval_minutes=1;
+  h.publicState.videos=[{url:'/media/a'}];
+  await h.context.poll();
+  assert.equal(h.timers.filter(t=>t.ms===60000&&!t.cleared).length,0);
+  h.video.pending[0].resolve();
+  await settle();
+  assert.equal(h.timers.filter(t=>t.ms===60000&&!t.cleared).length,0);
+  present();
+  assert.equal(h.timers.filter(t=>t.ms===60000&&!t.cleared).length,1);
 });

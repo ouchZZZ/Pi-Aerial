@@ -4,6 +4,8 @@ let state=null, videos=[], videoPos=-1, changeTimer=null, lastReload=null, selec
 let playAttempt=0, failedAttempt=-1, selectedVideo=null;
 let osdRight=false, hasPlayedVideo=false;
 let playingOnce=false, pollingDisplayRequest=false;
+let switchTimer=null, frameRequest=null, startupTimer=null, videoPresented=false;
+const FADE_OUT_MS=400;
 const rejectedUntil=new Map();
 const video=$('video');
 const layoutPreview=Boolean(location.search?.includes('layout_preview=1'));
@@ -137,11 +139,44 @@ function showWeather(){
 }
 function listChanged(list){return list.map(x=>x.id||x.url).join('|')!==videos.map(x=>x.id||x.url).join('|');}
 
+
+// A single decoder stays in use. Black covers the source/layout swap, while
+// the OSD fades independently and returns only after the new video has a frame.
+function cancelMediaTransition(){
+  clearTimeout(switchTimer);
+  clearTimeout(startupTimer);
+  switchTimer=startupTimer=null;
+  if(frameRequest!==null)video.cancelVideoFrameCallback?.(frameRequest);
+  frameRequest=null;
+}
+function finishMediaTransition(attempt){
+  if(attempt!==playAttempt||failedAttempt===attempt)return;
+  clearTimeout(startupTimer);
+  startupTimer=null;
+  frameRequest=null;
+  if(!playingOnce){
+    if(hasPlayedVideo)osdRight=!osdRight;
+    hasPlayedVideo=true;
+    renderOsdPosition();
+  }
+  videoPresented=true;
+  video.classList.add('ready');
+  document.body.classList.remove('media-transition');
+  const minutes=Number(state?.settings?.video_interval_minutes);
+  if(!playingOnce&&minutes>0){
+    clearTimeout(changeTimer);
+    changeTimer=setTimeout(changeVideo,minutes*60000);
+  }
+}
+
 // One failed playback attempt must only reject the clip and schedule a retry once.
 // HTMLMediaElement.error and a rejected play() promise often report the same failure.
 function reportPlaybackFailure(attempt,err){
-  if(attempt!==playAttempt || failedAttempt===attempt || !selectedFile)return;
+  if(attempt!==playAttempt || failedAttempt===attempt || switchTimer!==null || !selectedFile)return;
   failedAttempt=attempt;
+  cancelMediaTransition();
+  videoPresented=false;
+  document.body.classList.remove('media-transition');
   const mediaError=video.error;
   const code=mediaError?.code||0;
   const name=err?.name||(code?'MediaError':'неизвестная');
@@ -164,12 +199,17 @@ function reportPlaybackFailure(attempt,err){
 function changeVideo(){
   clearTimeout(changeTimer);
   if(playingOnce){
+    videoPresented=false;
+    document.body.classList.add('media-transition');
     playingOnce=false;
     document.body.classList.remove('playing-once');
   }
   const now=Date.now();
   const candidates=videos.map((v,i)=>({v,i})).filter(x=>(rejectedUntil.get(x.v.id||x.v.url)||0)<now);
   if(!candidates.length){
+    cancelMediaTransition();
+    videoPresented=false;
+    document.body.classList.remove('media-transition');
     ++playAttempt;
     selectedFile='';
     selectedVideo=null;
@@ -200,33 +240,38 @@ function changeVideo(){
   }
   videoPos=selected.i;
   playVideo(selected.v);
-  const minutes=Number(cfg.video_interval_minutes);
-  if(minutes>0)changeTimer=setTimeout(changeVideo,minutes*60000);
+
 }
 function playVideo(clip){
+  const fadeOut=videoPresented&&!playingOnce;
   const attempt=++playAttempt;
-  selectedFile=clip.id||clip.url;
-  selectedVideo=clip;
-  setText('clipName',clip.credit||displayText('ВИДЕОЗАСТАВКА','VIDEO SCREENSAVER'));
-
-  renderClipDescription(0);
-  video.classList.remove('ready');
-  video.src=clip.url;
-  video.load();
-  if(playingOnce){
-    changeTimer=setTimeout(()=>reportPlaybackFailure(attempt,new Error('Время запуска видео истекло')),15000);
-  }
-  video.play().then(()=>{
-    if(attempt!==playAttempt || failedAttempt===attempt)return;
-    if(playingOnce){
-      clearTimeout(changeTimer);
-    }else{
-      if(hasPlayedVideo)osdRight=!osdRight;
-      hasPlayedVideo=true;
-      renderOsdPosition();
-    }
-    video.classList.add('ready');
-  }).catch(err=>reportPlaybackFailure(attempt,err));
+  cancelMediaTransition();
+  document.body.classList.add('media-transition');
+  const start=()=>{
+    switchTimer=null;
+    if(attempt!==playAttempt)return;
+    videoPresented=false;
+    selectedFile=clip.id||clip.url;
+    selectedVideo=clip;
+    setText('clipName',clip.credit||displayText('ВИДЕОЗАСТАВКА','VIDEO SCREENSAVER'));
+    renderClipDescription(0);
+    video.classList.remove('ready');
+    video.src=clip.url;
+    video.load();
+    startupTimer=setTimeout(()=>reportPlaybackFailure(attempt,
+      new Error('Время запуска видео истекло')),15000);
+    video.play().then(()=>{
+      if(attempt!==playAttempt || failedAttempt===attempt)return;
+      if(typeof video.requestVideoFrameCallback==='function'){
+        frameRequest=video.requestVideoFrameCallback(()=>finishMediaTransition(attempt));
+      }else{
+        // Older Chromium: fulfilled play() means playback has started.
+        finishMediaTransition(attempt);
+      }
+    }).catch(err=>reportPlaybackFailure(attempt,err));
+  };
+  if(fadeOut)switchTimer=setTimeout(start,FADE_OUT_MS);
+  else start();
 }
 async function pollDisplayRequest(){
   if(!state||pollingDisplayRequest)return;
@@ -365,7 +410,7 @@ function renderClipDescription(second){
   setHidden('clipDescription',!description);
 }
 video.addEventListener('timeupdate',()=>renderClipDescription(video.currentTime));
-video.addEventListener('ended',changeVideo);
+video.addEventListener('ended',()=>{if(switchTimer===null)changeVideo();});
 video.addEventListener('error',()=>reportPlaybackFailure(playAttempt,video.error));
 setInterval(drawTime,10000);
 if(!layoutPreview){

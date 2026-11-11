@@ -32,9 +32,9 @@ def ensure_system_dependencies():
                    check=True, timeout=420)
 
 
-def save_status(message, ok):
+def save_status(message, ok, revision=None):
     tmp = STATUS.with_suffix('.tmp')
-    tmp.write_text(json.dumps({'ok': ok, 'message': message, 'at': time.time()}, ensure_ascii=False))
+    tmp.write_text(json.dumps({'ok': ok, 'message': message, 'at': time.time(), 'revision': revision}, ensure_ascii=False))
     os.replace(tmp, STATUS)
 
 
@@ -130,13 +130,47 @@ def refresh_helper(target):
     os.replace(tmp, active)
     active.chmod(0o700)
 
+
+def background_ready():
+    """Only the running application can confirm race-free media admission."""
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3) as response:
+            return json.loads(response.read()).get('update_ready') is True
+    except Exception:
+        return False
+
+
+def defer_update(queued):
+    """Return long draining to the app instead of hitting systemd's start timeout."""
+    request = DATA / 'update_request.json'
+    if not request.exists():
+        temp = request.with_suffix('.tmp')
+        try:
+            previous = json.loads(STATUS.read_text(encoding='utf8'))
+        except (FileNotFoundError, ValueError):
+            previous = {}
+        temp.write_text(json.dumps({
+            'payload': queued, 'automatic': False, 'requested_at': time.time(),
+            'previous_status': previous,
+        }), encoding='utf8')
+        os.replace(temp, request)
+
+
 def main():
     if not PENDING.exists():
         return
     old = (BASE / 'current').resolve(strict=True)
     did_switch = False
+    deferred = False
+    queued = {}
+    revision = None
     try:
-        queued = json.loads(PENDING.read_text())
+        queued = json.loads(PENDING.read_text(encoding='utf8'))
+        revision = queued.get('revision')
+        if not background_ready():
+            defer_update(queued)
+            deferred = True
+            return
         if queued.get('source') == 'github':
             target, version, revision = stage_github(queued, old)
         else:
@@ -150,29 +184,41 @@ def main():
         if (target / 'VERSION').read_text().strip() != version:
             raise ValueError('Версия выпуска не совпадает')
         if target.resolve() == old:
-            save_status('Последняя версия уже установлена', True)
+            save_status('Последняя версия уже установлена', True, revision)
             return
         ensure_system_dependencies()
         prepare_venv(target, old)
+        if not background_ready():
+            defer_update(queued)
+            deferred = True
+            return
         switch(target)
         did_switch = True
         service_restart()
         if not healthy(version, revision):
             raise RuntimeError('Новая версия не прошла проверку состояния')
         refresh_helper(target)
-        save_status(f'Установлена версия {version}' + (f' ({revision[:12]})' if revision else ''), True)
+        save_status(f'Установлена версия {version}' + (f' ({revision[:12]})' if revision else ''), True, revision)
     except Exception as exc:
         if did_switch:
             switch(old)
             try:
                 service_restart()
-                save_status(f'Неудачное обновление: восстановлена предыдущая версия ({exc})', False)
+                save_status(f'Неудачное обновление: восстановлена предыдущая версия ({exc})', False, revision)
             except Exception as restart_exc:
-                save_status(f'Ошибка отката: {restart_exc}', False)
+                save_status(f'Ошибка отката: {restart_exc}', False, revision)
         else:
-            save_status(f'Ошибка подготовки обновления: {exc}', False)
+            save_status(f'Ошибка подготовки обновления: {exc}', False, revision)
         raise
     finally:
+        if not deferred:
+            request = DATA / 'update_request.json'
+            try:
+                record = json.loads(request.read_text(encoding='utf8'))
+                if record.get('payload') == queued:
+                    request.unlink(missing_ok=True)
+            except (FileNotFoundError, ValueError):
+                pass
         PENDING.unlink(missing_ok=True)
 
 

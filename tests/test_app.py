@@ -146,6 +146,7 @@ def test_safe_upload_and_core_queue(monkeypatch):
         assert queued.status_code == 200, queued.text
         assert (DATA / 'pending_update.json').exists()
         assert (TEST_BASE / 'releases' / '0.2.0' / 'app' / 'main.py').exists()
+        (DATA / 'update_request.json').unlink(missing_ok=True)
         (DATA / 'pending_update.json').unlink()
 
 

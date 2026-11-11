@@ -81,9 +81,10 @@ def test_tvos26_tar_manifest_parsed_without_extraction(monkeypatch):
 
     monkeypatch.setattr(online.urllib.request, "urlopen",
                         lambda *args, **kwargs: FakeResponse(stream.getvalue()))
-    manifest, strings = online._apple_manifest()
+    manifest, strings, english = online._apple_manifest()
     assert manifest["assets"][0]["id"] == "new-clip"
     assert strings == {"caption": "Антарктида"}
+    assert english == {}
 
 
 def test_catalog_respects_metadata_ttl(monkeypatch, tmp_path):
@@ -541,3 +542,19 @@ def test_worker_enforces_quota_with_or_without_content_length(monkeypatch, tmp_p
     assert not list(tmp_path.glob("*.part"))
     assert not list(tmp_path.glob("*.mp4"))
     assert slot.acquire(blocking=False)
+
+
+def test_apple_keeps_english_library_metadata(monkeypatch):
+    entry = {"id": "ocean", "localizedNameKey": "title",
+             "pointsOfInterest": {"20": "later", "0": "caption"},
+             "url-1080-H264": "https://sylvan.apple.com/ocean.mov"}
+    monkeypatch.setattr(online, "_apple_manifest", lambda: (
+        {"assets": [entry]},
+        {"title": "Австралия", "caption": "Над океаном", "later": "Берег"},
+        {"title": "Australia", "caption": "Over the ocean", "later": "Coast"}))
+    clip = online._apple()[0]
+    assert clip["name"] == "Австралия"
+    assert clip["description"] == "Над океаном"
+    assert clip["name_en"] == "Australia"
+    assert clip["description_en"] == "Over the ocean"
+    assert clip["captions"][0]["text"] == "Над океаном"

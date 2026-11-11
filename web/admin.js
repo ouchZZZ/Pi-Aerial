@@ -21,7 +21,7 @@ async function init(){
     await load();
   }catch{togglePanel(false)}
 }
-async function load(){status=await api('/api/admin/status');$('version').textContent='v'+status.version;$('countVideos').textContent=status.videos.length;$('freeDisk').textContent=bytes(status.storage.free);$('diskTotal').textContent='Объём '+bytes(status.storage.total);$('moduleCount').textContent=status.modules.length;$('keyCount').textContent=status.trusted_keys;$('updateState').textContent=status.update_pending?'Идёт установка':(status.last_update?.message||'Нет обновлений');renderConfig();renderVideos();renderModules();renderOnlineSources();PiI18n.apply($('panel'));}
+async function load(){status=await api('/api/admin/status');$('version').textContent='v'+status.version;$('countVideos').textContent=status.videos.length;$('freeDisk').textContent=bytes(status.storage.free);$('diskTotal').textContent='Объём '+bytes(status.storage.total);$('moduleCount').textContent=status.modules.length;$('keyCount').textContent=status.trusted_keys;$('updateState').textContent=status.update_waiting?'Ожидание завершения загрузки и конвертации':status.update_pending?'Идёт установка':(status.last_update?.message||'Нет обновлений');renderConfig();renderVideos();renderModules();renderOnlineSources();PiI18n.apply($('panel'));}
 function renderConfig(){const f=$('settingsForm'),c=status.config;for(const [key,value] of Object.entries(c)){if(!f.elements[key])continue;if(f.elements[key].type==='checkbox')f.elements[key].checked=!!value;else if(key==='night_opacity')f.elements[key].value=Math.round(value*100);else f.elements[key].value=String(value);}updateNightValue();PiLocationPicker.sync(c);if(!pendingLanguage&&PiI18n.language!==c.language){PiI18n.setLocale(c.language||'ru');$('languageSelect').value=c.language||'ru';}}
 function updateNightValue(){$('nightValue').textContent=$('settingsForm').elements.night_opacity.value+'%'}
 function textNode(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e;}
@@ -216,7 +216,9 @@ function playOnceButton(source,name){
   });
   return button;
 }
+let libraryVideos=[];
 function renderLibrary(onlineVideos){
+  libraryVideos=onlineVideos;
   const onlineRoot=$('onlineLibraryList'),localRoot=$('localLibraryList');
   onlineRoot.replaceChildren();
   localRoot.replaceChildren();
@@ -229,13 +231,16 @@ function renderLibrary(onlineVideos){
       v.provider==='nasa'?'NASA':v.provider;
     const state=v.cached?'Готов к просмотру · '+progressSize(v.bytes):
       'MP4 удалён · повторная загрузка заблокирована';
-    const row=line(v.name,provider+' · '+state);
-    if(v.description)row.firstChild.append(textNode('p',v.description,'library-description'));
+    const english=PiI18n.language==='en';
+    const name=english?(v.name_en||v.name):v.name;
+    const description=english?(v.description_en||v.description):v.description;
+    const row=line(name,provider+' · '+state);
+    if(description)row.firstChild.append(textNode('p',description,'library-description'));
     const controls=document.createElement('div');controls.className='inline-actions library-actions';
     if(v.cached){
       const preview=textNode('button','Просмотр');
       preview.addEventListener('click',()=>openLibraryPreview(
-        v.name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview'));
+        name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview'));
       const remove=textNode('button','Удалить файл');
       remove.addEventListener('click',async()=>{
         if(!ask('Удалить готовый MP4? Запрет повторной загрузки останется.'))return;
@@ -308,13 +313,14 @@ async function upload(formId,inputId,url){const form=$(formId);const file=$(inpu
 $('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{const a=await api('/api/auth/login',{method:'POST',body:{password:$('password').value}});csrf=a.csrf;$('password').value='';$('loginError').textContent='';togglePanel(true);if(pendingLanguage){await api('/api/admin/config',{method:'PUT',body:{changes:{language:pendingLanguage}}});pendingLanguage=null;}await PiLocationPicker.loadTimezones();await load();}catch(err){$('loginError').textContent=err.message;}});
 $('logout').addEventListener('click',async()=>{try{await api('/api/auth/logout',{method:'POST'});}finally{csrf='';togglePanel(false)}});
 document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===tab));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='tab-'+tab.dataset.tab));if(tab.dataset.tab==='layout')PiLayoutEditor.open({status,api,toast,load});if(tab.dataset.tab==='videos')refreshVideoProgress().catch(e=>console.warn('Прогресс видео:',e));if(tab.dataset.tab==='library')load().then(loadLibrary).catch(e=>toast(e.message));}));
-$('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget;const changes={};for(const name of ['show_clock','show_date','show_weather','night_mode'])changes[name]=f.elements[name].checked;for(const name of ['city','timezone','time_format','video_mode'])changes[name]=f.elements[name].value;for(const name of ['latitude','longitude','night_opacity'])changes[name]=Number(f.elements[name].value);for(const name of ['video_interval_minutes','night_start','night_end'])changes[name]=Number(f.elements[name].value);changes.night_opacity/=100;try{await api('/api/admin/config',{method:'PUT',body:{changes}});$('settingsMessage').textContent='Сохранено';toast('Настройки применены');await load();}catch(e){toast(e.message)}});
+$('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget;const changes={};for(const name of ['show_clock','show_date','show_weather','night_mode','auto_update_enabled'])changes[name]=f.elements[name].checked;for(const name of ['city','timezone','time_format','video_mode'])changes[name]=f.elements[name].value;for(const name of ['latitude','longitude','night_opacity'])changes[name]=Number(f.elements[name].value);for(const name of ['video_interval_minutes','night_start','night_end','auto_update_interval_minutes'])changes[name]=Number(f.elements[name].value);changes.night_opacity/=100;try{await api('/api/admin/config',{method:'PUT',body:{changes}});$('settingsMessage').textContent='Сохранено';toast('Настройки применены');await load();}catch(e){toast(e.message)}});
 $('settingsForm').elements.night_opacity.addEventListener('input',updateNightValue);
 PiI18n.observe();
 PiLocationPicker.init(api);
 $('languageSelect').addEventListener('change',async()=>{
   const language=$('languageSelect').value==='en'?'en':'ru';
   PiI18n.setLocale(language);
+  if(status)renderLibrary(libraryVideos);
   if(!csrf){pendingLanguage=language;return;}
   try{
     await api('/api/admin/config',{method:'PUT',body:{changes:{language}}});
@@ -325,6 +331,7 @@ $('languageSelect').addEventListener('change',async()=>{
     if(status){
       $('languageSelect').value=status.config.language||'ru';
       PiI18n.setLocale(status.config.language||'ru');
+      renderLibrary(libraryVideos);
     }
   }
 });

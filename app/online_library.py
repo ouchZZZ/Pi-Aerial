@@ -36,6 +36,8 @@ def _metadata(entry: dict | None) -> dict:
     return {
         "name": str(entry.get("name") or "")[:110],
         "description": online._description(entry.get("description")),
+        "name_en": str(entry.get("name_en") or "")[:110],
+        "description_en": online._description(entry.get("description_en")),
         "provider": str(entry.get("provider") or "")[:24],
         "credit": str(entry.get("credit") or "")[:150],
         "page": str(entry.get("page") or "")[:400],
@@ -91,6 +93,8 @@ def list_videos() -> list[dict]:
             items.append({
                 "id": ident,
                 "name": metadata.get("name") or ident,
+                "name_en": metadata.get("name_en") or "",
+                "description_en": metadata.get("description_en") or "",
                 "description": metadata.get("description") or "",
                 "provider": metadata.get("provider") or "unknown",
                 "credit": metadata.get("credit") or "",

@@ -15,7 +15,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import bundles
-from .storage import BASE, DATA, read_json
+from .storage import BASE, DATA, read_json, atomic_json, settings
+from . import update_control
+import time
 
 PUBLIC_REMOTE = 'https://github.com/ouchZZZ/Pi-Aerial.git'
 LEGACY_SSH_REMOTE = 'git@github.com:ouchZZZ/Pi-Aerial.git'
@@ -131,3 +133,41 @@ def install_from_catalog(module_id: str):
         if manifest['id'] != module_id:
             raise ValueError('Неверный идентификатор в manifest.json')
         return bundles.install_module_directory(source), sha
+
+
+
+def auto_update_tick() -> None:
+    """Check main at the configured interval; never automatically retry a failed SHA."""
+    update_control.promote()
+    config = settings()
+    if not config.get("auto_update_enabled", False) or update_control.paused():
+        return
+    now = time.time()
+    previous = read_json(DATA / "auto_update_status.json")
+    interval_seconds = config.get("auto_update_interval_minutes", 60) * 60
+    if now - previous.get("checked_at", 0) < interval_seconds:
+        return
+    result = {"checked_at": now}
+    # Persist before networking, so repeated network errors cannot cause a hot loop.
+    atomic_json(DATA / "auto_update_status.json", result)
+    try:
+        latest = remote_revision()
+        result["latest"] = latest
+        failed = read_json(DATA / "update_status.json")
+        if (latest != installed_revision()
+                and not (failed.get("ok") is False and failed.get("revision") == latest)):
+            update_control.request({"source": "github", "revision": latest}, automatic=True)
+            result["queued"] = True
+    except (ValueError, OSError) as exc:
+        result["error"] = str(exc)[:400]
+    atomic_json(DATA / "auto_update_status.json", result)
+
+
+def polling_loop(stop) -> None:
+    while not stop.is_set():
+        try:
+            auto_update_tick()
+        except Exception as exc:
+            print(f"[updates] {exc}", flush=True)
+        if stop.wait(5):
+            break
