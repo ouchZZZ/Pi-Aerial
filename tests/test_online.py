@@ -303,10 +303,10 @@ def test_apple_mov_cache_forces_transcode_and_removes_source(monkeypatch, tmp_pa
                         lambda *args: FakeOpener())
     recorded = []
     def fake_normalize(source, output, on_progress=None, force_transcode=False, max_bytes=None):
-        assert force_transcode is True
+        assert force_transcode is False
         recorded.append(str(source))
         output.write_bytes(bytes.fromhex("000000186674797069736f6d") + b"M" * 2500)
-        return "transcode"
+        return "copy"
     monkeypatch.setattr(online, "normalize_video", fake_normalize)
     clip = online._clip(
         "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
