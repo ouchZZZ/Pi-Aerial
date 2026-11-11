@@ -131,7 +131,7 @@
     ['Подготовленные файлы, история загрузок и разовый показ по ссылке.','Prepared files, download history, and one-time playback by URL.'],
     ['Показать видео по ссылке','Play video from a link'],
     ['Ссылка на видео','Video URL'],
-    ['Пока поддерживается YouTube через официальный плеер. Видео не скачивается и не попадает в кеш. Звук включён при ручном показе. Качество выбирает YouTube: гарантировать ограничение 1080p нельзя.','YouTube is currently supported via its official player. Videos are not downloaded or cached. Manual playback has audio. YouTube chooses the quality; a 1080p cap cannot be guaranteed.'],
+    ['Поддерживаются YouTube и VK Видео (vkvideo.ru, vk.com, vk.ru). Для закрытых роликов VK используйте ссылку из «Поделиться → Код для встраивания» с hash. Видео не скачивается и не попадает в кеш. Ручной показ со звуком; максимум 1080p запрашивается у VK, но платформы могут выбирать качество автоматически.','YouTube and VK Video (vkvideo.ru, vk.com, vk.ru) are supported. For restricted VK videos, use the URL from Share → Embed code, including its hash. Videos are not downloaded or cached. Manual playback has audio. Up to 1080p is requested from VK, but platforms can choose playback quality automatically.'],
     ['Все сконвертированные файлы и история роликов, которые уже скачивали.','All converted videos and previously downloaded item history.'],
     ['Остановить разовый показ','Stop one-time playback'],
     ['Видеозаставка воспроизводится без звука. Кнопки «Просмотр» и «Показать один раз без OSD» включают звук, если он есть в файле.','Screensaver playback is muted. Preview and Play once without OSD enable sound when the file contains audio.'],
