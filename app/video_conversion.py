@@ -10,6 +10,7 @@ import json
 import shutil
 import subprocess
 import threading
+import time
 from collections import deque
 from fractions import Fraction
 from pathlib import Path
@@ -18,7 +19,6 @@ MAX_WIDTH = 1920
 MAX_HEIGHT = 1080
 MAX_FPS = 30
 MAX_LEVEL = 42
-MAX_BYTES = 550 * 1024 * 1024
 # One ffmpeg normalization at a time across online and manual uploads.
 CONVERSION_SLOT = threading.BoundedSemaphore(1)
 
@@ -117,13 +117,33 @@ def _parse_out_time(fields: dict) -> float | None:
 
 def _run_with_progress(command: list[str], timeout: int,
                        callback, duration: float | None) -> None:
-    """Read ffmpeg progress live, enforcing a hard timeout independently."""
+    """Stop after two consecutive idle windows, never for total runtime."""
     args = command[:-1] + ["-progress", "pipe:1", "-nostats", command[-1]]
     process = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf8", errors="replace", bufsize=1,
     )
     tail = deque(maxlen=8)
+    progress_lock = threading.Lock()
+    last_advance = time.monotonic()
+    high_water = {}
+
+    def advance(fields) -> None:
+        nonlocal last_advance
+        metrics = {"position": _parse_out_time(fields)}
+        for key in ("frame", "total_size"):
+            try:
+                metrics[key] = max(0, int(fields.get(key, "")))
+            except (TypeError, ValueError):
+                pass
+        with progress_lock:
+            moved = False
+            for key, value in metrics.items():
+                if value is not None and value > high_water.get(key, 0):
+                    high_water[key] = value
+                    moved = True
+            if moved:
+                last_advance = time.monotonic()
 
     def consume() -> None:
         fields = {}
@@ -135,9 +155,10 @@ def _run_with_progress(command: list[str], timeout: int,
                         tail.append(line[:180])
                     continue
                 name, value = line.split("=", 1)
-                if name in ("out_time_us", "out_time_ms", "out_time", "speed"):
+                if name in ("out_time_us", "out_time_ms", "out_time", "speed", "frame", "total_size"):
                     fields[name] = value
                 if name == "progress":
+                    advance(fields)
                     _emit(callback, stage="converting",
                           position_s=_parse_out_time(fields),
                           duration_s=duration, encode_speed=fields.get("speed"))
@@ -148,11 +169,30 @@ def _run_with_progress(command: list[str], timeout: int,
     reader = threading.Thread(target=consume, name="ffmpeg-progress", daemon=True)
     reader.start()
     try:
-        code = process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=10)
-        raise TimeoutError("ffmpeg превысил лимит обработки") from None
+        warned_at = None
+        while True:
+            try:
+                code = process.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                now = time.monotonic()
+                with progress_lock:
+                    idle = now - last_advance
+                    advanced_at = last_advance
+                if warned_at is not None and advanced_at > warned_at:
+                    warned_at = None
+                if idle < timeout:
+                    warned_at = None
+                elif warned_at is None:
+                    warned_at = now
+                    print("[conversion] Нет прогресса 20 минут; повторная проверка через 20 минут",
+                          flush=True)
+                elif now - warned_at >= timeout:
+                    process.kill()
+                    process.wait(timeout=10)
+                    raise TimeoutError(
+                        "ffmpeg: нет прогресса в двух последовательных интервалах по 20 минут"
+                    ) from None
     finally:
         reader.join(timeout=3)
     if code:
@@ -161,7 +201,7 @@ def _run_with_progress(command: list[str], timeout: int,
                            + (": " + message if message else ""))
 
 
-def normalize_video(source: Path, output: Path, max_bytes: int = MAX_BYTES,
+def normalize_video(source: Path, output: Path, max_bytes: int | None = None,
                     on_progress=None, *, force_transcode: bool = False) -> str:
     """Serialize all video work, reporting time spent waiting for the slot."""
     _emit(on_progress, stage="waiting")
@@ -170,7 +210,7 @@ def normalize_video(source: Path, output: Path, max_bytes: int = MAX_BYTES,
                                        force_transcode=force_transcode)
 
 
-def _normalize_video_locked(source: Path, output: Path, max_bytes: int,
+def _normalize_video_locked(source: Path, output: Path, max_bytes: int | None,
                             on_progress=None, *, force_transcode=False) -> str:
     """Create complete faststart MP4; return 'copy' or 'transcode'."""
     ffmpeg = shutil.which("ffmpeg")
@@ -199,20 +239,17 @@ def _normalize_video_locked(source: Path, output: Path, max_bytes: int,
             "-maxrate", "4500k", "-bufsize", "9000k",
         ]
     command = common + encoder + ["-movflags", "+faststart", str(output)]
-    timeout = 300 if copy else 1200
-    if on_progress is None:
-        subprocess.run(command, check=True, timeout=timeout, capture_output=True)
-    else:
-        duration = probe_duration(source)
-        _emit(on_progress, stage="converting",
-              mode="copy" if copy else "transcode", duration_s=duration)
-        _run_with_progress(command, timeout, on_progress, duration)
-        _emit(on_progress, stage="finalizing", mode="copy" if copy else "transcode")
+    duration = probe_duration(source)
+    _emit(on_progress, stage="converting",
+          mode="copy" if copy else "transcode", duration_s=duration)
+    _run_with_progress(command, 1200, on_progress, duration)
+    _emit(on_progress, stage="finalizing", mode="copy" if copy else "transcode")
     with output.open("rb") as result:
         header = result.read(12)
     if header[4:8] != b"ftyp" or header[8:12] == b"qt  ":
         raise ValueError("ffmpeg не создал совместимый MP4")
-    if not 1024 <= output.stat().st_size <= max_bytes:
+    if output.stat().st_size < 1024 or (
+            max_bytes is not None and output.stat().st_size > max_bytes):
         raise ValueError("Готовое видео пустое или слишком большое")
     # Verify output itself; copy mode must not silently preserve unsupported codecs.
     verified = probe_video(output)

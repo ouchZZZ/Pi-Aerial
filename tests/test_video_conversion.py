@@ -46,7 +46,9 @@ def _fake_convert(monkeypatch, tmp_path, src_profile):
             )
         return SimpleNamespace(stdout="")
 
-    monkeypatch.setattr(vc.subprocess, "run", run)
+    monkeypatch.setattr(vc, "probe_duration", lambda source: None)
+    monkeypatch.setattr(vc, "_run_with_progress",
+                        lambda command, timeout, callback, duration: run(command, timeout=timeout))
     return original, output, recorded
 
 
@@ -57,7 +59,7 @@ def test_copy_h264_in_background_without_quality_loss(monkeypatch, tmp_path):
     assert command[:3] == ["nice", "-n", "15"]
     assert command[command.index("-c:v") + 1] == "copy"
     assert "+faststart" in command
-    assert kwargs["timeout"] == 300
+    assert kwargs["timeout"] == 1200
 
 
 def test_force_transcode_even_compatible_1080_h264(monkeypatch, tmp_path):

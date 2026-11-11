@@ -41,7 +41,6 @@ CATALOG_FILE = DATA / "online_catalog.json"
 PROCESSED_FILE = DATA / "online_processed.json"
 CACHE_FOLDER = DATA / "online_cache"
 REFRESH_SECONDS = 6 * 3600
-MAX_DOWNLOAD = 550 * 1024 * 1024  # a single background cache file
 RESERVE_BYTES = 5 * 1024 ** 3
 LOCK = threading.RLock()
 DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
@@ -565,15 +564,17 @@ def cache_status() -> dict:
         free = shutil.disk_usage(disk_path).free
     except OSError:
         pass
-    # Reserve the maximum possible finished MP4; no completed file is deleted.
-    limit_paused = used + MAX_DOWNLOAD > limit
-    # Download + transcode temporarily coexist, so keep an extra safety margin.
-    disk_paused = free is None or free < RESERVE_BYTES + 2 * MAX_DOWNLOAD
+    # Each source/output may consume at most half the remaining cache quota.
+    file_limit = max(0, limit - used) // 2
+    limit_paused = file_limit < 1024
+    # Keep the existing disk reserve; source and output temporarily coexist.
+    disk_paused = free is None or free < RESERVE_BYTES + 2048
     return {
         "used_bytes": used,
         "limit_bytes": limit,
         "free_bytes": free,
         "max_limit_gb": max_online_cache_gb(),
+        "file_limit_bytes": file_limit,
         "paused": limit_paused or disk_paused,
         "pause_reason": "limit" if limit_paused else ("disk" if disk_paused else None),
     }
@@ -589,8 +590,10 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None) -
             return
         max_bytes = int(cfg.get("online_cache_gb", 12)) * 1024**3
         CACHE_FOLDER.mkdir(parents=True, exist_ok=True)
-        if cache_status()["paused"]:
+        admission = cache_status()
+        if admission["paused"]:
             return
+        file_limit = admission["file_limit_bytes"]
         temp = CACHE_FOLDER / (ident + ".part")
         muxed = CACHE_FOLDER / (ident + ".mux.mp4")
         final = CACHE_FOLDER / (ident + ".mp4")
@@ -609,15 +612,15 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None) -
         try:
             with opener.open(req, timeout=18) as response, temp.open("xb") as file:
                 length = int(response.headers.get("Content-Length") or 0)
-                if length > MAX_DOWNLOAD:
-                    raise ValueError("Слишком большой ролик для кеша")
+                if length > file_limit:
+                    raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
                 video_progress.download("online", ident, 0, length or None)
                 while True:
                     buf = response.read(1024 * 256)
                     if not buf:
                         break
                     total += len(buf)
-                    if total > MAX_DOWNLOAD or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
+                    if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
                         raise ValueError("Достигнут лимит видео или свободного места")
                     file.write(buf)
                     video_progress.download("online", ident, total, length or None)
@@ -634,7 +637,7 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None) -
             print(f"[online] preparing {provider}: {ident} "
                   f"({total // 1024 // 1024} МБ исходник)", flush=True)
             mode = normalize_video(
-                temp, muxed, force_transcode=True,
+                temp, muxed, max_bytes=file_limit, force_transcode=True,
                 on_progress=lambda **fields: video_progress.conversion(
                     "online", ident, **fields))
             # Other files may be added while we convert. Discard only this

@@ -301,7 +301,7 @@ def test_apple_mov_cache_forces_transcode_and_removes_source(monkeypatch, tmp_pa
     monkeypatch.setattr(online.urllib.request, "build_opener",
                         lambda *args: FakeOpener())
     recorded = []
-    def fake_normalize(source, output, on_progress=None, force_transcode=False):
+    def fake_normalize(source, output, on_progress=None, force_transcode=False, max_bytes=None):
         assert force_transcode is True
         recorded.append(str(source))
         output.write_bytes(bytes.fromhex("000000186674797069736f6d") + b"M" * 2500)
@@ -439,7 +439,7 @@ def test_cache_limit_pauses_without_eviction_then_resumes(monkeypatch, tmp_path)
                        "New", "Apple", "https://www.apple.com/")
     ready = cache / (old["id"] + ".mp4")
     with ready.open("wb") as video:
-        video.truncate(800 * 1024**2)
+        video.truncate(1024**3)
     (cache / (old["id"] + ".ready")).write_text(online.CACHE_PROFILE)
     online.atomic_json(online.CATALOG_FILE, {
         "sources": {"apple": {"items": [old, new]}}
@@ -447,7 +447,7 @@ def test_cache_limit_pauses_without_eviction_then_resumes(monkeypatch, tmp_path)
 
     status = online.cache_status()
     assert status["paused"] and status["pause_reason"] == "limit"
-    assert status["used_bytes"] == 800 * 1024**2
+    assert status["used_bytes"] == 1024**3
     calls = []
     monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]))
     online.warm_cache()
@@ -472,7 +472,7 @@ def test_cache_pauses_if_disk_reserve_is_threatened(monkeypatch, tmp_path):
         online.shutil, "disk_usage",
         lambda path: SimpleNamespace(
             total=128 * 1024**3,
-            free=online.RESERVE_BYTES + 2 * online.MAX_DOWNLOAD - 1,
+            free=online.RESERVE_BYTES + 2048 - 1,
         ),
     )
     status = online.cache_status()
@@ -497,3 +497,47 @@ def test_uncached_mov_is_never_streamed_as_mp4(monkeypatch):
     response = client.get("/media/online/" + entry["id"])
     assert response.status_code == 503
     assert not fetched
+
+
+def test_file_limit_is_half_remaining_quota(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
+    monkeypatch.setattr(online, "settings", lambda: {"online_cache_gb": 12})
+    monkeypatch.setattr(online, "_cache_used_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(online.shutil, "disk_usage",
+                        lambda path: SimpleNamespace(free=100 * 1024**3, total=128 * 1024**3))
+    status = online.cache_status()
+    assert status["file_limit_bytes"] == 4 * 1024**3
+    assert not status["paused"]
+
+
+@pytest.mark.parametrize("declared", [True, False])
+def test_worker_enforces_quota_with_or_without_content_length(monkeypatch, tmp_path, declared):
+    import io
+    import threading
+    from types import SimpleNamespace
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
+    monkeypatch.setattr(online, "settings",
+                        lambda: {"online_cache_enabled": True, "online_cache_gb": 12})
+    monkeypatch.setattr(online, "cache_status",
+                        lambda: {"paused": False, "file_limit_bytes": 2048})
+    monkeypatch.setattr(online.shutil, "disk_usage",
+                        lambda path: SimpleNamespace(free=100 * 1024**3))
+    class Response(io.BytesIO):
+        headers = {"Content-Length": "4096"} if declared else {}
+    class Opener:
+        def open(self, *args, **kwargs):
+            return Response(b"x" * 4096)
+    monkeypatch.setattr(online.urllib.request, "build_opener", lambda *a: Opener())
+    converted = []
+    monkeypatch.setattr(online, "normalize_video", lambda *a, **kw: converted.append(True))
+    entry = online._clip("apple", "quota-boundary",
+                         "https://sylvan.apple.com/quota.mov",
+                         "Quota", "Apple", "https://www.apple.com/")
+    slot = threading.BoundedSemaphore(1)
+    slot.acquire()
+    online._cache_worker(entry, slot)
+    assert not converted
+    assert not list(tmp_path.glob("*.part"))
+    assert not list(tmp_path.glob("*.mp4"))
+    assert slot.acquire(blocking=False)
