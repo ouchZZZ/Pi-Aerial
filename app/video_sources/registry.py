@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from . import youtube
+from . import youtube, vkvideo
 from .base import ResolvedVideo
 
 
@@ -15,7 +15,7 @@ class InvalidVideoURL(ValueError):
     """Unsupported or malformed external video link."""
 
 
-SOURCES = (youtube,)
+SOURCES = (youtube, vkvideo)
 
 
 def resolve(value: str) -> ResolvedVideo:

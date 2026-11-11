@@ -5,6 +5,7 @@ let playAttempt=0, failedAttempt=-1, selectedVideo=null;
 let osdRight=false, hasPlayedVideo=false;
 let playingOnce=false, pollingDisplayRequest=false;
 let embeddedPlayer=null, embeddedApiPromise=null, embeddedGeneration=0, embeddedTimer=null, embeddedActive=false;
+let vkApiPromise=null;
 let switchTimer=null, frameRequest=null, startupTimer=null, videoPresented=false;
 const FADE_OUT_MS=400;
 const rejectedUntil=new Map();
@@ -278,6 +279,91 @@ function playEmbedded(request){
     });
   }).catch(error=>embeddedPlaybackFailed(generation,error));
 }
+function loadVKAPI(){
+  if(globalThis.VK?.VideoPlayer)return Promise.resolve(globalThis.VK);
+  if(vkApiPromise)return vkApiPromise;
+  vkApiPromise=new Promise((resolve,reject)=>{
+    const script=document.createElement('script');
+    script.src='https://vk.com/js/api/videoplayer.js';
+    script.onload=()=>{
+      if(globalThis.VK?.VideoPlayer)resolve(globalThis.VK);
+      else reject(new Error('VK Video API unavailable'));
+    };
+    script.onerror=()=>reject(new Error('Не удалось загрузить плеер VK Видео'));
+    document.head.appendChild(script);
+  }).catch(error=>{
+    vkApiPromise=null;
+    throw error;
+  });
+  return vkApiPromise;
+}
+function validVKVideoRequest(request){
+  return request.provider==='vkvideo' &&
+    typeof request.owner_id==='string' && /^-?[0-9]{1,20}$/.test(request.owner_id) &&
+    typeof request.video_id==='string' && /^[0-9]{1,20}$/.test(request.video_id) &&
+    (request.hash===undefined ||
+      (typeof request.hash==='string' && /^[a-fA-F0-9]{1,128}$/.test(request.hash)));
+}
+function playVKEmbedded(request){
+  if(!validVKVideoRequest(request)){
+    console.error('Pi Aerial: invalid VK Video request');
+    changeVideo();
+    return;
+  }
+  stopEmbeddedPlayer();
+  cancelMediaTransition();
+  ++playAttempt;
+  clearTimeout(changeTimer);
+  selectedFile='vkvideo:'+request.owner_id+'_'+request.video_id;
+  selectedVideo=null;
+  video.pause();
+  video.muted=true;
+  video.classList.remove('ready');
+  videoPresented=false;
+  if(video.hasAttribute('src')){video.removeAttribute('src');video.load();}
+  document.body.classList.remove('media-transition');
+  $('externalLayer').hidden=false;
+  embeddedActive=true;
+  const generation=embeddedGeneration;
+  embeddedTimer=setTimeout(()=>embeddedPlaybackFailed(generation,new Error('VK Video startup timed out')),45000);
+  loadVKAPI().then(VK=>{
+    if(generation!==embeddedGeneration||!playingOnce)return;
+    const iframe=document.createElement('iframe');
+    iframe.id='externalVKPlayer';
+    iframe.title='VK Видео';
+    // Fixed VK host; all query values are revalidated, never inject raw URLs.
+    iframe.src='https://vkvideo.ru/video_ext.php?oid='+encodeURIComponent(request.owner_id)+
+      '&id='+encodeURIComponent(request.video_id)+'&hd=4&autoplay=1&js_api=1'+
+      (request.hash?'&hash='+encodeURIComponent(request.hash):'');
+    iframe.allow='autoplay; encrypted-media; fullscreen; picture-in-picture';
+    iframe.allowFullscreen=true;
+    iframe.referrerPolicy='strict-origin-when-cross-origin';
+    $('externalLayer').replaceChildren(iframe);
+    embeddedPlayer=VK.VideoPlayer(iframe);
+    embeddedPlayer.on('inited',()=>{
+      if(generation!==embeddedGeneration||!playingOnce)return;
+      try{
+        embeddedPlayer.unmute();
+        const result=embeddedPlayer.play();
+        if(result && typeof result.catch==='function'){
+          result.catch(error=>embeddedPlaybackFailed(generation,error));
+        }
+      }catch(error){embeddedPlaybackFailed(generation,error);}
+    });
+    const started=()=>{
+      if(generation!==embeddedGeneration||!playingOnce)return;
+      clearTimeout(embeddedTimer);
+      embeddedTimer=null;
+    };
+    embeddedPlayer.on('started',started);
+    embeddedPlayer.on('resumed',started);
+    embeddedPlayer.on('ended',()=>{
+      if(generation===embeddedGeneration&&playingOnce)changeVideo();
+    });
+    embeddedPlayer.on('error',error=>embeddedPlaybackFailed(generation,
+      new Error('VK Video error: '+String(error?.state||'unknown'))));
+  }).catch(error=>embeddedPlaybackFailed(generation,error));
+}
 function changeVideo(){
   clearTimeout(changeTimer);
   if(embeddedActive)stopEmbeddedPlayer();
@@ -378,7 +464,8 @@ async function pollDisplayRequest(){
     clearTimeout(changeTimer);
     playingOnce=true;
     document.body.classList.add('playing-once');
-    if(request.kind==='embed')playEmbedded(request);
+    if(request.kind==='embed'&&request.provider==='vkvideo')playVKEmbedded(request);
+    else if(request.kind==='embed')playEmbedded(request);
     else playVideo(request);
   }catch(e){console.warn('Pi Aerial: display request unavailable',e);}
   finally{pollingDisplayRequest=false;}
