@@ -724,7 +724,7 @@ def test_all_sources_get_round_robin_turns_including_nasa_after_two(monkeypatch,
     assert [item["id"] for item in scheduled if item["provider"] == "nasa"] == [
         clips["nasa"][2]["id"], clips["nasa"][3]["id"]
     ]
-    assert online.read_json(online.SCHEDULER_FILE)["next"] == "robin"
+    assert online.read_json(online.SCHEDULER_FILE)["next"] == "ia_nature"
 
 
 def test_round_robin_cursor_survives_a_restart_and_skips_disabled(monkeypatch, tmp_path):
