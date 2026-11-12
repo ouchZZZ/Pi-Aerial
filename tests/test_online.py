@@ -1007,3 +1007,128 @@ def test_download_failures_are_accurate_and_do_not_expose_addresses():
     text = online._download_failure_message(exc)
     assert "secret" not in text
     assert "адрес скрыт" in text
+
+
+
+def test_catalog_refresh_interval_defaults_to_sixty_minutes_and_can_change(
+        monkeypatch, tmp_path):
+    clock = [1_000_000.0]
+    config = {"online_sources": {"apple": True},
+              "online_refresh_interval_minutes": 60}
+    clip = online._clip("apple", "demo", "https://sylvan.apple.com/demo.mp4",
+                        "Demo", "Apple", "https://www.apple.com/")
+    calls = []
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "settings", lambda: config)
+    monkeypatch.setattr(online, "FETCHERS",
+                        {"apple": lambda: calls.append(clock[0]) or [clip]})
+    monkeypatch.setattr(online, "warm_cache", lambda: None)
+    monkeypatch.setattr(online.time, "time", lambda: clock[0])
+
+    online.refresh_catalog()
+    assert len(calls) == 1
+    clock[0] += 59 * 60
+    online.refresh_catalog()
+    assert len(calls) == 1
+    clock[0] += 60
+    online.refresh_catalog()
+    assert len(calls) == 2
+
+    # Changing the setting takes effect on the next poll, without restart.
+    config["online_refresh_interval_minutes"] = 120
+    clock[0] += 119 * 60
+    online.refresh_catalog()
+    assert len(calls) == 2
+    clock[0] += 60
+    online.refresh_catalog()
+    assert len(calls) == 3
+
+    # Manual refresh retains the existing one-minute safeguard.
+    clock[0] += 30
+    online.refresh_catalog(force=True)
+    assert len(calls) == 3
+    clock[0] += 31
+    online.refresh_catalog(force=True)
+    assert len(calls) == 4
+
+
+def test_online_refresh_interval_persists_and_rejects_bad_values(
+        monkeypatch, tmp_path):
+    from app import storage
+    monkeypatch.setattr(storage, "DATA", tmp_path)
+    assert storage.settings()["online_refresh_interval_minutes"] == 60
+    assert storage.update_settings({
+        "online_refresh_interval_minutes": 120
+    })["online_refresh_interval_minutes"] == 120
+    assert storage.settings()["online_refresh_interval_minutes"] == 120
+    for invalid in [0, -1, True, 5.5, "120", None]:
+        with pytest.raises(ValueError, match="Интервал проверки видеоисточников"):
+            storage.update_settings({"online_refresh_interval_minutes": invalid})
+    assert storage.settings()["online_refresh_interval_minutes"] == 120
+
+
+def test_refresh_skips_disabled_sources_at_new_interval(monkeypatch, tmp_path):
+    clock = [1_000_000.0]
+    calls = []
+    clips = {
+        name: online._clip(name, "one",
+            ("https://sylvan.apple.com/a.mp4" if name == "apple"
+             else "https://images-assets.nasa.gov/video/a.mp4"),
+            "Sample", name, "https://example.com/")
+        for name in ("apple", "nasa")
+    }
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"apple": False, "nasa": True},
+        "online_refresh_interval_minutes": 1,
+    })
+    monkeypatch.setattr(online, "FETCHERS", {
+        key: (lambda key=key: calls.append(key) or [clips[key]])
+        for key in ("apple", "nasa")
+    })
+    monkeypatch.setattr(online, "warm_cache", lambda: None)
+    monkeypatch.setattr(online.time, "time", lambda: clock[0])
+    online.refresh_catalog()
+    clock[0] += 61
+    online.refresh_catalog()
+    assert calls == ["nasa", "nasa"]
+
+
+def test_background_and_manual_catalog_checks_are_serialized(monkeypatch, tmp_path):
+    import threading
+    import time
+
+    started = threading.Event()
+    release = threading.Event()
+    requests = []
+    clip = online._clip("apple", "race", "https://sylvan.apple.com/race.mp4",
+                        "Race", "Apple", "https://www.apple.com/")
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"apple": True},
+        "online_refresh_interval_minutes": 60,
+    })
+    monkeypatch.setattr(online, "warm_cache", lambda: None)
+
+    def slow_fetch():
+        requests.append("apple")
+        started.set()
+        if not release.wait(3):
+            raise AssertionError("test release timed out")
+        return [clip]
+
+    monkeypatch.setattr(online, "FETCHERS", {"apple": slow_fetch})
+    first = threading.Thread(target=online.refresh_catalog)
+    second = threading.Thread(target=online.refresh_catalog)
+    first.start()
+    assert started.wait(2)
+    second.start()
+    try:
+        time.sleep(0.05)
+        assert len(requests) == 1  # A second scan cannot overlap.
+    finally:
+        release.set()
+        first.join(timeout=3)
+        second.join(timeout=3)
+    assert not first.is_alive() and not second.is_alive()
+    assert requests == ["apple"]  # Recheck reads the first scan's timestamp.

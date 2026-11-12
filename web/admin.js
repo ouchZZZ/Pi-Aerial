@@ -182,6 +182,7 @@ function renderOnlineSources(){
     label.append(check,document.createTextNode(' Включён'));
     row.append(label);root.append(row);
   }
+  $('onlineRefreshIntervalMinutes').value=String(status.config.online_refresh_interval_minutes??60);
   $('onlineAutodownload').checked=status.config.online_autodownload_enabled!==false;
   $('onlineCacheEnabled').checked=!!status.cache?.enabled;
   $('onlineCacheLimit').value=Number(status.cache?.limit_gb||12);
@@ -527,15 +528,34 @@ $('languageSelect').addEventListener('change',async()=>{
 });
 $('reloadDisplay').addEventListener('click',async()=>{try{await api('/api/admin/display/reload',{method:'POST'});toast('Экран перезагрузится при следующей проверке')}catch(e){toast(e.message)}});
 $('videoForm').addEventListener('submit',e=>{e.preventDefault();upload('videoForm','videoInput','/api/admin/videos')});
+$('onlineRefreshIntervalSave').addEventListener('click',async event=>{
+  const button=event.currentTarget;
+  const field=$('onlineRefreshIntervalMinutes');
+  const minutes=Number(field.value);
+  if(!Number.isSafeInteger(minutes)||minutes<1){
+    toast('Интервал проверки должен быть целым числом минут не меньше 1');
+    return;
+  }
+  button.disabled=true;
+  try{
+    await api('/api/admin/config',{method:'PUT',
+      body:{changes:{online_refresh_interval_minutes:minutes}}});
+    $('onlineRefreshIntervalMessage').textContent=PiI18n.translate('Интервал сохранён');
+    await load();
+    toast('Настройки проверки источников сохранены');
+  }catch(error){
+    toast(error.message);
+  }finally{button.disabled=false}
+});
 $('onlineRefresh').addEventListener('click',async()=>{
   const button=$('onlineRefresh');
   button.disabled=true;
-  $('onlineSourceMessage').textContent='Проверяю Apple, NASA и Robin Fourcade…';
+  $('onlineSourceMessage').textContent='Проверяю включённые источники…';
   try{
     await api('/api/admin/online/refresh',{method:'POST'});
     await load();
     $('onlineSourceMessage').textContent='Проверка завершена';
-    toast('Каталоги Apple/NASA/Robin перепроверены');
+    toast('Каталоги включённых источников перепроверены');
   }catch(e){
     $('onlineSourceMessage').textContent=e.message;
     toast(e.message);
