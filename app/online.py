@@ -33,7 +33,27 @@ from .storage import DATA, atomic_json, read_json, settings, max_online_cache_gb
 from .video_conversion import normalize_video
 from . import video_progress
 
-SOURCE_NAMES = {"apple": "Apple Aerial", "nasa": "NASA", "robin": "Robin Fourcade"}
+ARCHIVE_THEMES = {
+    "ia_nature": ("Internet Archive · Природа",
+                  '(title:(nature OR landscape OR mountain OR forest OR ocean) '
+                  'OR subject:(nature OR landscape OR mountain OR forest OR ocean))'),
+    "ia_cities": ("Internet Archive · Города",
+                  '(title:(aerial city OR skyline OR cityscape) '
+                  'OR subject:(cityscape OR aerial city OR skyline))'),
+    "ia_history": ("Internet Archive · Исторические города",
+                   '(title:(historic city OR historical city OR city streets) '
+                   'OR subject:(urban history OR city streets OR historic city))'),
+    "ia_space": ("Internet Archive · Космос",
+                 '(title:(earth from space OR space timelapse OR orbit) '
+                 'OR subject:(earth from space OR orbital footage))'),
+    "ia_timelapse": ("Internet Archive · Таймлапсы",
+                     '(title:(timelapse OR time-lapse OR aurora) '
+                     'OR subject:(time-lapse OR timelapse OR aurora))'),
+}
+SOURCE_NAMES = {
+    "apple": "Apple Aerial", "nasa": "NASA", "robin": "Robin Fourcade",
+    **{key: label for key, (label, _) in ARCHIVE_THEMES.items()},
+}
 SOURCE_URLS = {
     "apple": ("https://sylvan.apple.com/itunes-assets/Aerials126/v4/"
               "c0/45/d9/c045d9d0-9606-1535-62fe-189edb4f79eb/"
@@ -46,13 +66,15 @@ PROCESSED_FILE = DATA / "online_processed.json"
 SCHEDULER_FILE = DATA / "online_scheduler.json"
 CACHE_FOLDER = DATA / "online_cache"
 # Round-robin order; the next turn survives application restarts.
-SOURCE_ORDER = ("robin", "apple", "nasa")
+SOURCE_ORDER = ("robin", "apple", "nasa", *ARCHIVE_THEMES)
 REFRESH_SECONDS = 6 * 3600
 RESERVE_BYTES = 5 * 1024 ** 3
 LOCK = threading.RLock()
 DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
 ACTIVE: set[str] = set()
 CACHE_WORKERS: dict[threading.Thread, threading.Event | None] = {}
+CANCEL_EVENTS: dict[str, threading.Event] = {}
+
 CACHE_FAILED_UNTIL: dict[str, float] = {}
 # This marker describes playback compatibility, not CRF or encoder settings.
 # Keep it stable so a quality update never invalidates the existing cache.
@@ -74,6 +96,17 @@ def allowed_video_url(url: str, provider: str) -> bool:
             "apple": ("apple.com", "mzstatic.com"),
             "nasa": ("nasa.gov",),
         }.get(provider, ())
+        if provider in ARCHIVE_THEMES:
+            # Archive downloads redirect to numbered archive.org storage hosts.
+            # Never follow arbitrary hostnames or item metadata URLs.
+            if not (host == "archive.org" or
+                    re.fullmatch(r"ia[0-9]+\.us\.archive\.org", host)):
+                return False
+            parts = urllib.parse.unquote(parsed.path).split("/")
+            return (len(parts) >= 4 and parts[1] == "download"
+                    and re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", parts[2]) is not None
+                    and all(part not in ("", ".", "..") and "\\" not in part
+                            for part in parts[3:]))
         if provider == "robin":
             # GitHub release downloads redirect to signed GitHub asset CDN URLs.
             # Never accept an arbitrary repository or third-party media host.
@@ -194,7 +227,7 @@ def source_status() -> list[dict]:
             ),
             "error": (("Установите ffmpeg: sudo apt install -y ffmpeg"
                        if shutil.which("ffmpeg") is None else None)
-                      if provider in ("apple", "nasa", "robin")
+                      if provider in SOURCE_NAMES
                       and cfg["online_sources"].get(provider)
                       and not state.get("error") else state.get("error")),
             "last_updated": state.get("updated"),
@@ -478,7 +511,170 @@ def _robin() -> list[dict]:
     return result
 
 
-FETCHERS = {"apple": _apple, "nasa": _nasa, "robin": _robin}
+
+def _archive_license(value: object) -> str | None:
+    """Allow only an explicit uploader-supplied license permitting conversion.
+
+    These declarations are NOT an independent rights verification.
+    """
+    if isinstance(value, list):
+        value = next((v for v in value if isinstance(v, str)), "")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value.strip())
+        if (parsed.scheme not in ("http", "https")
+                or parsed.hostname != "creativecommons.org"):
+            return None
+        path = parsed.path.strip("/").lower().split("/")
+        if (len(path) >= 2 and path[0] == "licenses"
+                and path[1] in ("by", "by-sa")):
+            return value.strip()
+        if (len(path) >= 2 and path[0] == "publicdomain"
+                and path[1] in ("zero", "mark")):
+            return value.strip()
+    except ValueError:
+        pass
+    return None
+
+
+def _archive_resolution(file: dict, metadata: dict) -> tuple[int, int] | None:
+    """Accept real recorded dimensions; never treat an unknown 720p as HD."""
+    def dimension(value):
+        try:
+            number = int(value)
+            return number if 0 < number < 10000 else 0
+        except (ValueError, TypeError):
+            return 0
+    width = dimension(file.get("width") or file.get("source_pixel_width"))
+    height = dimension(file.get("height") or file.get("source_pixel_height"))
+    if not width or not height:
+        name = str(file.get("name") or "")[:220]
+        match = re.search(r"(?<!\d)(\d{3,4})[xX×](\d{3,4})(?!\d)", name)
+        if match:
+            width, height = int(match.group(1)), int(match.group(2))
+    if not width or not height:
+        width = dimension(metadata.get("source_pixel_width"))
+        height = dimension(metadata.get("source_pixel_height"))
+    if width >= 1920 and height >= 1080 and 1.74 <= width / height <= 1.82:
+        return width, height
+    return None
+
+
+def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
+    """One Internet Archive item becomes at most one suitable HD video."""
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    license_url = _archive_license(metadata.get("licenseurl") or doc.get("licenseurl"))
+    if license_url is None:
+        return None
+    identifier = doc.get("identifier")
+    if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", identifier):
+        return None
+    options = []
+    for file in payload.get("files", [])[:150]:
+        if not isinstance(file, dict):
+            continue
+        name = file.get("name")
+        if not isinstance(name, str) or len(name) > 240 or (
+                not name.lower().endswith((".mp4", ".m4v", ".mov"))):
+            continue
+        if any(part in ("", ".", "..") for part in name.split("/")):
+            continue
+        if file.get("private") == "true":
+            continue
+        resolution = _archive_resolution(file, metadata)
+        if not resolution:
+            continue
+        try:
+            size = int(file.get("size") or 0)
+            duration = float(file.get("length") or 0)
+        except (ValueError, TypeError, OverflowError):
+            continue
+        if size < 1024 or size > 8 * 1024**3:
+            continue
+        if duration and not 30 <= duration <= 600:
+            continue
+        url = ("https://archive.org/download/" + identifier + "/" +
+               urllib.parse.quote(name, safe="/"))
+        if not allowed_video_url(url, provider):
+            continue
+        # Prefer 1080p MP4, then higher resolution and MOV.
+        options.append((abs(resolution[1] - 1080),
+                        not name.lower().endswith(".mp4"),
+                        size, url, resolution, duration))
+    if not options:
+        return None
+    _, _, size, url, (width, height), duration = min(options)
+    title = _description(doc.get("title"), metadata.get("title"), identifier)
+    description = _description(metadata.get("description"),
+                               doc.get("description"))
+    subject = metadata.get("subject") or doc.get("subject") or ""
+    if isinstance(subject, list):
+        subject = ", ".join(str(v) for v in subject[:25])
+    credit = _description(metadata.get("creator"), doc.get("creator"),
+                          "Internet Archive")[:150]
+    year = str(metadata.get("year") or doc.get("year") or "")[:12]
+    clip = _clip(provider, identifier, url, title, credit,
+                 "https://archive.org/details/" + identifier, description)
+    if clip:
+        clip.update({"name_en": title, "description_en": description,
+                     "subject": _description(subject), "year": year,
+                     "license": license_url, "quality": f"{width}×{height}",
+                     "duration": round(duration) if duration else None,
+                     "size_hint": size,
+                     "thumbnail": "https://archive.org/services/img/" + identifier})
+    return clip
+
+
+def _archive_theme(provider: str) -> list[dict]:
+    """Bounded topical search; only metadata-declared HD widescreen media pass.
+
+    The candidate list is a human-moderated proposal, not an auto-download.
+    """
+    theme = ARCHIVE_THEMES[provider][1]
+    params = urllib.parse.urlencode({
+        "q": "mediatype:movies AND " + theme,
+        "rows": 36, "page": 1, "output": "json",
+        "sort[]": "downloads desc",
+    })
+    # Repeated fl[] fields are understood by advancedsearch.php.
+    params += "".join("&fl%5B%5D=" + urllib.parse.quote(field)
+                      for field in ("identifier", "title", "creator", "description",
+                                    "subject", "licenseurl", "year"))
+    found = _http_json("https://archive.org/advancedsearch.php?" + params, timeout=18)
+    docs = found.get("response", {}).get("docs", []) if isinstance(found, dict) else []
+    if not isinstance(docs, list):
+        raise ValueError("Internet Archive: invalid search response")
+    results: list[dict] = []
+    # Metadata calls are read-only, limited and run in parallel to bound latency.
+    def resolve(doc):
+        ident = doc.get("identifier", "") if isinstance(doc, dict) else ""
+        if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", ident):
+            return None
+        try:
+            metadata = _http_json("https://archive.org/metadata/" + ident, timeout=10)
+            return _archive_candidate(provider, doc, metadata)
+        except Exception as exc:
+            print(f"[online] archive {provider}/{ident}: {exc}", flush=True)
+            return None
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        for clip in pool.map(resolve, docs[:24]):
+            if clip:
+                results.append(clip)
+    # An empty new page is normal, especially with strict 1080p/16:9 filtering.
+    return results[:24]
+
+
+FETCHERS = {
+    "apple": _apple, "nasa": _nasa, "robin": _robin,
+    **{provider: (lambda provider=provider: _archive_theme(provider))
+       for provider in ARCHIVE_THEMES},
+}
 
 
 def refresh_catalog(force=False, stop: threading.Event | None = None) -> None:
@@ -504,11 +700,23 @@ def refresh_catalog(force=False, stop: threading.Event | None = None) -> None:
         attempted = time.time()
         try:
             clips = fetch()
-            if not clips:
+            if not clips and name not in ARCHIVE_THEMES:
                 raise ValueError("Каталог пуст или не содержит подходящих MP4")
             state = {"updated": time.time(), "attempted": attempted,
                      "items": clips, "error": None,
                      "feed": {"apple": "tvos26", "nasa": "nasa", "robin": "aerialshots"}.get(name, name)}
+            if name in ARCHIVE_THEMES:
+                # Retain previously discovered suggestions across refreshes.
+                old = [item for item in sources.get(name, {}).get("items", [])
+                       if isinstance(item, dict)]
+                combined = {item["id"]: item for item in old if isinstance(item.get("id"), str)}
+                combined.update({item["id"]: item for item in clips})
+                # Bound catalog growth without dropping explicitly selected items.
+                from . import online_library
+                selected = online_library.selected_ids()
+                keep = [item for item in combined.values() if item["id"] in selected]
+                remaining = [item for item in combined.values() if item["id"] not in selected]
+                state["items"] = (keep + remaining[-350:])
         except Exception as exc:
             state["attempted"] = attempted
             state["error"] = str(exc)[:180]
@@ -516,7 +724,7 @@ def refresh_catalog(force=False, stop: threading.Event | None = None) -> None:
         sources[name] = state
         changed = True
         # Make new assets available to the shared sequential worker immediately.
-        if name in ("apple", "nasa", "robin"):
+        if name in FETCHERS:
             with LOCK:
                 atomic_json(CATALOG_FILE, {"sources": sources})
             if stop is None:
@@ -532,6 +740,8 @@ def list_clips() -> list[dict]:
     with LOCK:
         sources = read_json(CATALOG_FILE).get("sources", {})
     enabled = settings()["online_sources"]
+    from . import online_library
+    selected = online_library.selected_ids()
     result = []
     for provider, state in sources.items():
         if not enabled.get(provider, False):
@@ -545,7 +755,7 @@ def list_clips() -> list[dict]:
             cached = cached_file(item_id) is not None
             # Online providers can publish QuickTime, HEVC or H.264.
             # Only list files already normalized to our compatible MP4 profile.
-            if provider in ("apple", "nasa", "robin") and not cached:
+            if not cached or item_id not in selected:
                 continue
             result.append({"id": item_id, "name": item["name"],
                            "url": "/media/online/" + item_id,
@@ -563,6 +773,10 @@ def lookup(clip_id: str) -> dict | None:
     with LOCK:
         entries = read_json(CATALOG_FILE).get("sources", {})
     enabled = settings()["online_sources"]
+    from . import online_library
+    selected = online_library.selected_ids()
+    if clip_id not in selected:
+        return None
     for provider, state in entries.items():
         if not enabled.get(provider, False):
             continue
@@ -669,14 +883,26 @@ def cache_status() -> dict:
     }
 
 
+class _CombinedStop:
+    """A per-video cancellation and the owning application lifespan stop."""
+    def __init__(self, parent, own):
+        self.parent, self.own = parent, own
+
+    def is_set(self):
+        return self.own.is_set() or (self.parent is not None and self.parent.is_set())
+
+
 def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                   stop: threading.Event | None = None) -> None:
     # Keep the acquired semaphore even if the module global is replaced.
     slot = slot if slot is not None else DOWNLOAD_SLOT
     ident = entry["id"]
+    with LOCK:
+        own = CANCEL_EVENTS.get(ident, threading.Event())
+    combined = _CombinedStop(stop, own)
     with update_control.media_job() as admitted:
         try:
-            if not admitted or (stop is not None and stop.is_set()):
+            if not admitted or combined.is_set():
                 return
             cfg = settings()
             if not cfg.get("online_cache_enabled", True):
@@ -709,8 +935,8 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                         raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
                     video_progress.download("online", ident, 0, length or None)
                     while True:
-                        if stop is not None and stop.is_set():
-                            raise InterruptedError("Фоновая загрузка остановлена")
+                        if combined.is_set():
+                            raise InterruptedError("Фоновая загрузка снята с выбора")
                         buf = response.read(1024 * 256)
                         if not buf:
                             break
@@ -734,22 +960,25 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                 kwargs = {"max_bytes": file_limit,
                           "on_progress": lambda **fields: video_progress.conversion(
                               "online", ident, **fields)}
-                if stop is not None:
-                    kwargs["stop"] = stop
-                    if stop.is_set():
-                        raise InterruptedError("Фоновая загрузка остановлена")
+                if stop is not None or ident in CANCEL_EVENTS:
+                    kwargs["stop"] = combined
+                    if combined.is_set():
+                        raise InterruptedError("Фоновая загрузка снята с выбора")
                 mode = normalize_video(temp, muxed, **kwargs)
-                if stop is not None and stop.is_set():
-                    raise InterruptedError("Фоновая загрузка остановлена")
+                if combined.is_set():
+                    raise InterruptedError("Фоновая загрузка снята с выбора")
                 # Other files may be added while we convert. Discard only this
                 # new output if it no longer fits: never evict existing MP4.
                 if _cache_used_bytes() + muxed.stat().st_size > max_bytes:
                     raise ValueError("Кеш заполнен во время подготовки нового видео")
-                os.replace(muxed, final)
-                (CACHE_FOLDER / (ident + ".ready")).write_text(CACHE_PROFILE, encoding="utf8")
-                _mark_processed(ident)
                 from . import online_library
-                online_library.remember(ident, entry)
+                with LOCK:
+                    if combined.is_set() or not online_library.is_selected(ident):
+                        raise InterruptedError("Видео снято с выбора перед публикацией")
+                    os.replace(muxed, final)
+                    (CACHE_FOLDER / (ident + ".ready")).write_text(CACHE_PROFILE, encoding="utf8")
+                    _mark_processed(ident)
+                    online_library.remember(ident, entry)
                 print(f"[online] ready {provider}: {ident} "
                       f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
                 video_progress.finish("online", ident, True)
@@ -768,6 +997,7 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
             with LOCK:
                 ACTIVE.discard(ident)
                 CACHE_WORKERS.pop(threading.current_thread(), None)
+                CANCEL_EVENTS.pop(ident, None)
             slot.release()
 
 
@@ -781,8 +1011,10 @@ def try_cache(entry: dict, stop: threading.Event | None = None) -> bool:
             or cache_status()["paused"]):
         return False
     ident = entry["id"]
+    from . import online_library
     with LOCK:
-        if ((stop is not None and stop.is_set())
+        if (not online_library.is_selected(ident)
+                or (stop is not None and stop.is_set())
                 or ident in ACTIVE or cached_file(ident) is not None
                 or ident in _processed_ids()
                 or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
@@ -791,6 +1023,7 @@ def try_cache(entry: dict, stop: threading.Event | None = None) -> bool:
         if not slot.acquire(blocking=False):
             return False
         ACTIVE.add(ident)
+        CANCEL_EVENTS[ident] = threading.Event()
         worker = threading.Thread(target=_cache_worker,
                                   args=(dict(entry), slot, stop), daemon=True)
         CACHE_WORKERS[worker] = stop
@@ -800,6 +1033,7 @@ def try_cache(entry: dict, stop: threading.Event | None = None) -> bool:
         with LOCK:
             CACHE_WORKERS.pop(worker, None)
             ACTIVE.discard(ident)
+            CANCEL_EVENTS.pop(ident, None)
             slot.release()
         raise
     return True
@@ -830,9 +1064,11 @@ def warm_cache(stop: threading.Event | None = None) -> None:
             or shutil.which("ffmpeg") is None
             or cache_status()["paused"]):
         return
+    from . import online_library
+    online_library.cleanup_unselected()
     with LOCK:
         catalog = read_json(CATALOG_FILE).get("sources", {})
-        done = _processed_ids()
+        selected = online_library.selected_ids()
         next_source = read_json(SCHEDULER_FILE).get("next")
         start = SOURCE_ORDER.index(next_source) if next_source in SOURCE_ORDER else 0
         order = SOURCE_ORDER[start:] + SOURCE_ORDER[:start]
@@ -852,7 +1088,7 @@ def warm_cache(stop: threading.Event | None = None) -> None:
                     continue
                 ident = entry.get("id", "")
                 if (not isinstance(ident, str) or len(ident) != 24
-                        or ident in done or cached_file(ident) is not None
+                        or ident not in selected or cached_file(ident) is not None
                         or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
                     continue
                 scheduled = (try_cache(entry) if stop is None
