@@ -352,7 +352,7 @@ function renderLibrary(onlineVideos){
     const state=v.cached?'Готов к просмотру · '+progressSize(v.bytes):
       v.active?'Загружается / обрабатывается':
       !v.selected?'Не выбран':
-      v.failed?'Ошибка, повторная попытка позже':
+      v.failed?(v.error||'Ошибка, повторная попытка позже'):
       !v.can_select?'Нет в текущем каталоге':'В очереди загрузки';
     const row=line(name,source+' · '+state+
       (v.quality?' · '+v.quality:'')+(v.year?' · '+v.year:''));
@@ -384,6 +384,19 @@ function renderLibrary(onlineVideos){
       preview.addEventListener('click',()=>openLibraryPreview(
         name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview'));
       controls.append(preview,playOnceButton('online',v.id));
+    }
+    if(v.failed&&v.selected&&!v.cached&&!v.active){
+      const retry=textNode('button','Повторить загрузку');
+      retry.addEventListener('click',async()=>{
+        retry.disabled=true;
+        try{
+          await api('/api/admin/online/library/'+encodeURIComponent(v.id)+'/retry',
+            {method:'POST'});
+          toast('Ролик снова в очереди');
+          await loadLibrary();
+        }catch(error){toast(error.message);retry.disabled=false}
+      });
+      controls.append(retry);
     }
     if(v.page&&/^https:\/\/(archive\.org|github\.com|www\.apple\.com|images\.nasa\.gov)\//.test(v.page)){
       const link=textNode('a','Оригинал');
