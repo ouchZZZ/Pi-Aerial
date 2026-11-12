@@ -640,6 +640,10 @@ def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
         lowered = name.lower()
         if re.search(r"(?:^|[^a-z0-9])(?:360p|480p|576p|720p|sd)(?:[^a-z0-9]|$)", lowered):
             continue
+        named_size = re.search(r"(?<!\\d)(\\d{3,4})[xX×](\\d{3,4})(?!\\d)", name)
+        if named_size and not _archive_hd_widescreen(
+                int(named_size.group(1)), int(named_size.group(2))):
+            continue
         # A missing width/height is not evidence that a file is 480p.
         # Propose it with an explicit unknown-quality label; the downloaded
         # bytes MUST pass ffprobe before they can enter the playable cache.
