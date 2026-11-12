@@ -155,6 +155,8 @@
     [' · проверено: ',' · checked: '],
     [' · найдено за проход: ',' · found this scan: '],
     [' · качество не указано: ',' · unspecified quality: '],
+    [' · отсеяно по содержанию: ',' · rejected by content: '],
+    [' · ошибок поиска: ',' · search errors: '],
     ['Неизвестно','Unknown'],
     ['Предложенные и готовые онлайн-ролики','Suggested and prepared online videos'],
     ['Галочка управляет загрузкой и хранением. Снятие галочки отменяет закачку и удаляет готовый файл; повторный выбор снова добавляет ролик в очередь. Для уже готовых файлов доступны просмотр и разовый показ без OSD.','Check to download and keep the clip. Unchecking cancels download and removes its file; checking again requeues it. Ready files can be previewed or played once without OSD.'],

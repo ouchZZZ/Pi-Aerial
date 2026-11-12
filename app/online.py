@@ -99,6 +99,36 @@ SOURCE_ORDER = ("robin", "apple", "nasa", *ARCHIVE_THEMES)
 DEFAULT_REFRESH_MINUTES = 60
 MIN_ARCHIVE_SECONDS = 60
 MAX_ARCHIVE_SECONDS = 1800
+NASA_SEARCH_TERMS = (
+    "earth from space timelapse",
+    "international space station earth views",
+    "aurora from space",
+    "earth at night ISS",
+    "orbital sunrise earth",
+    "earth horizon clouds",
+    "moon surface flyover",
+)
+NASA_PAGE_SIZE = 32
+NASA_MAX_MANIFESTS = 56
+NASA_NEGATIVE = re.compile(
+    r"\b(?:interviews?|news(?:cast)?|press (?:briefing|conference)|"
+    r"conferences?|launch(?:es|pad)?|rockets?|podcasts?|webinars?|"
+    r"lectures?|panel discussions?|tutorials?|behind.the.scenes|"
+    r"trainings?|documentar(?:y|ies)|live ?streams?|webcasts?|"
+    r"animations?|simulations?|visuali[sz]ations?|computer.generated|"
+    r"artists?['’ ]s? (?:concept|impression)|explainers?|"
+    r"speeches|ceremon(?:y|ies)|mission control|press events?)\b", re.I)
+NASA_SCENERY = (
+    (re.compile(r"\b(?:time[ -]?lapse|timelapse)\b", re.I), 8),
+    (re.compile(r"\bearth from (?:space|the iss|orbit)\b", re.I), 8),
+    (re.compile(r"\b(?:earth at night|city lights|night side|nightside)\b", re.I), 7),
+    (re.compile(r"\b(?:aurora|northern lights|southern lights)\b", re.I), 6),
+    (re.compile(r"\b(?:orbital sunrise|orbital sunset|earthrise|earthset)\b", re.I), 6),
+    (re.compile(r"\b(?:earth horizon|horizon of earth|cloud formations?)\b", re.I), 5),
+    (re.compile(r"\b(?:moon surface|lunar surface|moon flyover)\b", re.I), 5),
+    (re.compile(r"\b(?:orbit(?:al|ing)?|from the iss|space station)\b", re.I), 3),
+    (re.compile(r"\b(?:earth views?|view of earth|clouds?|storms?|flyover|footage)\b", re.I), 2),
+)
 CATALOG_REFRESH_LOCK = threading.Lock()
 RESERVE_BYTES = 5 * 1024 ** 3
 LOCK = threading.RLock()
@@ -111,6 +141,8 @@ CACHE_FAILED_UNTIL: dict[str, float] = {}
 CACHE_FAILED_REASONS: dict[str, str] = {}
 # Bounded diagnostic report for the most recent Archive discovery cycle.
 ARCHIVE_SCAN_REPORT: dict[str, dict] = {}
+NASA_SCAN_REPORT: dict[str, int] = {}
+NASA_CACHE_CHECK_MARKER = DATA / 'nasa-cache-verified-v1.json'
 # This marker describes playback compatibility, not CRF or encoder settings.
 # Keep it stable so a quality update never invalidates the existing cache.
 CACHE_PROFILE = "h264-1080p30-8bit-v1"
@@ -312,7 +344,7 @@ def source_status() -> list[dict]:
                     if "accepted_ids" in state.get("scan", {})
                     else min(state.get("scan", {}).get("accepted", 0),
                              len(visible))
-            } if provider in ARCHIVE_THEMES else {}),
+            } if provider in ARCHIVE_THEMES or provider == "nasa" else {}),
         })
     return out
 
@@ -469,8 +501,55 @@ def _apple() -> list[dict]:
     return result[:250]
 
 
+def _nasa_metadata_score(entry: dict) -> int:
+    """Rank likely scenic footage from NASA metadata, not from query terms."""
+    data = entry.get("data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return 0
+    info = data[0]
+    if info.get("media_type") not in (None, "video"):
+        return 0
+    title = _description(info.get("title")).lower()
+    description = _description(info.get("description"),
+                               info.get("description_508")).lower()
+    keywords = info.get("keywords", [])
+    keyword_text = (" ".join(str(part) for part in keywords[:30])[:700].lower()
+                    if isinstance(keywords, list) else "")
+    if NASA_NEGATIVE.search(title + " " + keyword_text):
+        return 0
+    if NASA_NEGATIVE.search(description[:250]):
+        return 0
+    duration = _archive_duration_seconds(info.get("duration") or info.get("runtime"))
+    if duration is not None and not (MIN_ARCHIVE_SECONDS <= duration <= MAX_ARCHIVE_SECONDS):
+        return 0
+    score = 0
+    for signal, points in NASA_SCENERY:
+        if signal.search(title):
+            score += points
+        elif signal.search(keyword_text):
+            score += max(2, points // 2)
+        elif signal.search(description[:900]):
+            score += max(1, points // 3)
+    return score if score >= 5 else 0
+
+
+def _nasa_movie_rank(url: str) -> tuple[int, int, str]:
+    """Explicit Full HD wins, otherwise prefer originals over previews."""
+    name = urllib.parse.unquote(urllib.parse.urlsplit(url).path).rsplit("/", 1)[-1].lower()
+    if re.search(r"(?:^|[^0-9])(?:1080p?|1920[x×]1080)(?:[^0-9]|$)", name):
+        tier = 0
+    elif re.search(r"(?:~|[_-])orig(?:inal)?(?:[._~-]|$)", name):
+        tier = 1
+    elif re.search(r"(?:~|[_-])large(?:[._~-]|$)", name):
+        tier = 2
+    else:
+        tier = 3
+    suffix = urllib.parse.urlsplit(url).path.lower()
+    return tier, 0 if suffix.endswith((".mp4", ".m4v")) else 1, url
+
+
 def _nasa_manifest(entry: dict) -> tuple[dict | None, str]:
-    """Resolve an actual movie URL: the search endpoint only contains previews."""
+    """Resolve an actual NASA video asset, rejecting SD preview renditions."""
     info = (entry.get("data") or [{}])[0]
     sid = str(info.get("nasa_id") or "")
     if not sid or len(sid) > 180 or "/" in sid:
@@ -483,22 +562,21 @@ def _nasa_manifest(entry: dict) -> tuple[dict | None, str]:
         return None, "manifest_error"
     files = [r.get("href") for r in manifest.get("collection", {}).get("items", [])
              if isinstance(r, dict) and isinstance(r.get("href"), str)]
-    movies = [
-        secure for url in files
-        if isinstance(url, str)
-        for secure in [nasa_https_url(url)]
-        if secure is not None
-        and urllib.parse.urlsplit(secure).path.lower().endswith((".mp4", ".m4v", ".mov"))
-    ]
-    # Prefer browser-friendly MP4, then medium/small renditions to avoid 4K.
-    movies.sort(key=lambda url: (
-        not urllib.parse.urlsplit(url).path.lower().endswith((".mp4", ".m4v")),
-        not any(t in url.lower() for t in ("~medium", "~small", "_medium", "_small")),
-        "~orig" in url.lower(),
-        len(url),
-    ))
+    movies = []
+    for url in files:
+        secure = nasa_https_url(url)
+        if secure is None:
+            continue
+        name = urllib.parse.unquote(urllib.parse.urlsplit(secure).path).lower()
+        if not name.endswith((".mp4", ".m4v", ".mov")):
+            continue
+        if re.search(r"(?:~|[_-])(?:small|medium|thumb|preview)(?:[._~-]|$)"
+                     r"|(?:^|[^0-9])(?:240|360|480|576|720)p(?:[^0-9]|$)", name):
+            continue
+        movies.append(secure)
     if not movies:
-        return None, "no_movie"
+        return None, "no_hd_candidate"
+    movies.sort(key=_nasa_movie_rank)
     clip = _clip("nasa", sid, movies[0], str(info.get("title") or "NASA Earth"),
                  "NASA Image and Video Library", "https://images.nasa.gov/details/" +
                  urllib.parse.quote(sid, safe=""),
@@ -507,41 +585,76 @@ def _nasa_manifest(entry: dict) -> tuple[dict | None, str]:
 
 
 def _nasa() -> list[dict]:
-    # A phrase-only query was too restrictive and produced empty catalogs.
-    # Search across several themes and resolve videos from their asset manifests.
-    result: list[dict] = []
-    seen: set[str] = set()
-    counts: dict[str, int] = {}
-    for term in ("earth", "international space station", "earth timelapse"):
-        query = urllib.parse.urlencode({"q": term, "media_type": "video",
-                                        "page_size": 36})
-        response = _http_json(SOURCE_URLS["nasa"] + "?" + query, timeout=12)
-        entries = response.get("collection", {}).get("items", [])
-        candidates = []
-        for entry in entries[:24]:
-            if not isinstance(entry, dict):
-                continue
-            info = (entry.get("data") or [{}])[0]
-            sid = str(info.get("nasa_id") or "")
-            if sid and sid not in seen:
-                seen.add(sid)
-                candidates.append(entry)
-        # Parallel manifests avoid a long delay when one NASA asset times out.
-        with ThreadPoolExecutor(max_workers=5) as pool:
-            futures = [pool.submit(_nasa_manifest, e) for e in candidates]
-            for future in as_completed(futures):
+    """Search scenic NASA footage across themes/pages, rank before manifests."""
+    candidates: dict[str, tuple[int, dict]] = {}
+    counts: dict[str, int] = {"scanned": 0, "rejected_metadata": 0,
+                              "duplicates": 0, "search_errors": 0}
+    pages = 0
+    for term in NASA_SEARCH_TERMS:
+        for page in (1, 2):
+            query = urllib.parse.urlencode({"q": term, "media_type": "video",
+                                            "page_size": NASA_PAGE_SIZE,
+                                            "page": page})
+            try:
+                response = _http_json(SOURCE_URLS["nasa"] + "?" + query, timeout=12)
+                entries = response.get("collection", {}).get("items", [])
+                if not isinstance(entries, list):
+                    raise ValueError("Invalid NASA search response")
+            except Exception as exc:
+                print(f"[online] nasa search {term} page={page}: {exc}", flush=True)
+                counts["search_errors"] += 1
+                break
+            pages += 1
+            for entry in entries:
+                counts["scanned"] += 1
+                if not isinstance(entry, dict):
+                    counts["rejected_metadata"] += 1
+                    continue
+                info = (entry.get("data") or [{}])[0]
+                sid = str(info.get("nasa_id") or "") if isinstance(info, dict) else ""
+                score = _nasa_metadata_score(entry)
+                if not sid or len(sid) > 180 or "/" in sid or not score:
+                    counts["rejected_metadata"] += 1
+                    continue
+                previous = candidates.get(sid)
+                if previous is not None:
+                    counts["duplicates"] += 1
+                if previous is None or score > previous[0]:
+                    candidates[sid] = score, entry
+            if len(entries) < NASA_PAGE_SIZE:
+                break
+    ranked = sorted(candidates.items(), key=lambda part: (-part[1][0], part[0]))
+    selected = ranked[:NASA_MAX_MANIFESTS]
+    counts["candidates"] = len(candidates)
+    counts["manifest_checked"] = len(selected)
+    counts["pages"] = pages
+    found: list[tuple[int, str, dict]] = []
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {
+            pool.submit(_nasa_manifest, entry): (score, sid)
+            for sid, (score, entry) in selected
+        }
+        for future in as_completed(futures):
+            score, sid = futures[future]
+            try:
                 clip, status = future.result()
-                counts[status] = counts.get(status, 0) + 1
-                if clip:
-                    result.append(clip)
-        if len(result) >= 15:
-            break
-    if not result:
-        raise ValueError("NASA: не нашлось видеофайлов после проверки манифестов; " +
-                         ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-    print(f"[online] nasa: {len(result)} videos; " +
-          ", ".join(f"{k}={v}" for k, v in sorted(counts.items())), flush=True)
-    return result[:40]
+            except Exception:
+                clip, status = None, "manifest_error"
+            counts[status] = counts.get(status, 0) + 1
+            if clip:
+                found.append((score, sid, clip))
+    found.sort(key=lambda row: (-row[0], row[1]))
+    results = [clip for _, _, clip in found[:40]]
+    counts["accepted"] = len(results)
+    NASA_SCAN_REPORT.clear()
+    NASA_SCAN_REPORT.update(counts)
+    print("[online] nasa discovery: " +
+          ", ".join(f"{key}={value}" for key, value in sorted(counts.items())),
+          flush=True)
+    if not results:
+        raise ValueError("NASA: подходящие ролики не найдены; " +
+                         ", ".join(f"{key}={value}" for key, value in sorted(counts.items())))
+    return results
 
 
 def _robin() -> list[dict]:
@@ -944,6 +1057,18 @@ def _refresh_catalog_inner(force=False, stop: threading.Event | None = None) -> 
             state = {"updated": time.time(), "attempted": attempted,
                      "items": clips, "error": None,
                      "feed": {"apple": "tvos26", "nasa": "nasa", "robin": "aerialshots"}.get(name, name)}
+            if name == "nasa":
+                # A rotating NASA search must not lose existing selections.
+                from . import online_library
+                previous = [item for item in sources.get(name, {}).get("items", [])
+                            if isinstance(item, dict)]
+                selected = online_library.selected_ids()
+                kept = {item["id"]: item for item in previous
+                        if item.get("id") in selected}
+                kept.update({item["id"]: item for item in clips})
+                state["items"] = list(kept.values())[:200]
+                state["scan"] = {**NASA_SCAN_REPORT,
+                                 "accepted_ids": [clip["id"] for clip in clips]}
             if name in ARCHIVE_THEMES:
                 # Retain previously discovered suggestions across refreshes.
                 old = [item for item in sources.get(name, {}).get("items", [])
@@ -1171,6 +1296,53 @@ class _CombinedStop:
         return self.own.is_set() or (self.parent is not None and self.parent.is_set())
 
 
+
+def _verify_scenic_video(path: Path, provider: str) -> None:
+    """Check original resolution/aspect and duration before transcoding."""
+    from .video_conversion import probe_video, probe_duration
+    actual = probe_video(path)
+    width = int(actual.get("width") or 0)
+    height = int(actual.get("height") or 0)
+    label = "NASA" if provider == "nasa" else "Internet Archive"
+    if not _archive_hd_widescreen(width, height):
+        raise ValueError(f"{label}: неподходящее качество {width}×{height}; "
+                         "нужно не ниже 1080p и 16:9")
+    duration = probe_duration(path)
+    if duration is None or not (MIN_ARCHIVE_SECONDS <= duration <= MAX_ARCHIVE_SECONDS):
+        raise ValueError(f"{label}: длительность вне диапазона 60–1800 секунд "
+                         "или не подтверждена ffprobe")
+
+
+def verify_old_nasa_cache_once() -> None:
+    """Discard technically unsuitable old NASA cache; keep selections/settings."""
+    if NASA_CACHE_CHECK_MARKER.is_file() or shutil.which("ffprobe") is None:
+        return
+    with LOCK:
+        source = read_json(CATALOG_FILE).get("sources", {}).get("nasa", {})
+        entries = source.get("items", []) if isinstance(source, dict) else []
+        ids = {item["id"] for item in entries
+               if isinstance(item, dict) and isinstance(item.get("id"), str)
+               and len(item["id"]) == 24}
+        checked = discarded = 0
+        for ident in ids:
+            path = CACHE_FOLDER / (ident + ".mp4")
+            if cached_file(ident) is None:
+                continue
+            checked += 1
+            try:
+                _verify_scenic_video(path, "nasa")
+            except (OSError, ValueError, RuntimeError) as exc:
+                path.unlink(missing_ok=True)
+                (CACHE_FOLDER / (ident + ".ready")).unlink(missing_ok=True)
+                discarded += 1
+                print(f"[online] NASA cache rejected {ident}: {exc}", flush=True)
+        atomic_json(NASA_CACHE_CHECK_MARKER,
+                    {"version": 1, "checked": checked, "discarded": discarded})
+        print(f"[online] NASA old cache: checked={checked}, discarded={discarded}",
+              flush=True)
+
+
+
 def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                   stop: threading.Event | None = None) -> None:
     # Keep the acquired semaphore even if the module global is replaced.
@@ -1232,21 +1404,8 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                     raise ValueError("Ответ сервера не содержит MP4/MOV")
                 # Metadata is incomplete for many Archive items. Real video
                 # dimensions are the final, non-negotiable admission gate.
-                if provider in ARCHIVE_THEMES:
-                    from .video_conversion import probe_video, probe_duration
-                    actual = probe_video(temp)
-                    width = int(actual.get("width") or 0)
-                    height = int(actual.get("height") or 0)
-                    if not _archive_hd_widescreen(width, height):
-                        raise ValueError(
-                            f"Internet Archive: неподходящее качество "
-                            f"{width}×{height}; нужно не ниже 1080p и 16:9")
-                    real_duration = probe_duration(temp)
-                    if real_duration is None or not (
-                            MIN_ARCHIVE_SECONDS <= real_duration <= MAX_ARCHIVE_SECONDS):
-                        raise ValueError(
-                            "Internet Archive: длительность меньше 60 секунд "
-                            "или не подтверждена ffprobe")
+                if provider in ARCHIVE_THEMES or provider == "nasa":
+                    _verify_scenic_video(temp, provider)
                 if shutil.which("ffmpeg") is None:
                     raise ValueError("Нужен ffmpeg для подготовки видео")
                 if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:

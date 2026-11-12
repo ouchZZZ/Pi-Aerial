@@ -44,7 +44,7 @@ def test_nasa_manifest_mp4(monkeypatch):
     def fake(url, **kw):
         if "/search?" in url:
             return {"collection": {"items": [
-                {"data": [{"nasa_id": "earth1", "title": "Earth"}]}]}}
+                {"data": [{"nasa_id": "earth1", "title": "Earth from space timelapse"}]}]}}
         return {"collection": {"items": [
             {"href": "https://images-assets.nasa.gov/video/earth1.mp4"}]}}
     monkeypatch.setattr(online, "_http_json", fake)
@@ -203,7 +203,7 @@ def test_nasa_multiple_queries_and_mov_fallback(monkeypatch):
         if "/search?" in url:
             if "earth+" in url or "earth&" in url:
                 return {"collection": {"items": [{"data": [{"nasa_id": "no-mp4",
-                                                              "title": "ISS Earth"}]}]}}
+                                                              "title": "ISS Earth timelapse"}]}]}}
             return {"collection": {"items": []}}
         return {"collection": {"items": [
             {"href": "https://images-assets.nasa.gov/video/earth~orig.mov"}]}}
@@ -343,7 +343,7 @@ def test_nasa_http_manifest_links_are_upgraded(monkeypatch):
     def fake(url, **kw):
         if "/search?" in url:
             return {"collection": {"items": [{"data": [{"nasa_id": "earth",
-                                                          "title": "Earth"}]}]}}
+                                                          "title": "Earth from space timelapse"}]}]}}
         return {"collection": {"items": [{
             "href": "http://images-assets.nasa.gov/video/earth/earth~orig.mp4"}]}}
     monkeypatch.setattr(online, "_http_json", fake)
@@ -1264,3 +1264,167 @@ def test_archive_worker_rejects_real_five_second_file_before_conversion(monkeypa
     assert slot.acquire(blocking=False)
     assert not (cache / (clip["id"] + ".mp4")).exists()
     assert "длительность" in online.CACHE_FAILED_REASONS[clip["id"]]
+
+
+def _nasa_item(sid: str, title: str, description: str = "", **extra):
+    return {"data": [{"nasa_id": sid, "media_type": "video", "title": title,
+                       "description": description, **extra}]}
+
+
+def test_nasa_metadata_prefers_scenery_over_generic_news_and_animation():
+    assert online._nasa_metadata_score(
+        _nasa_item("good", "Earth From Space Timelapse: Aurora")) > 8
+    assert online._nasa_metadata_score(
+        _nasa_item("generic", "Earth")) == 0
+    assert online._nasa_metadata_score(
+        _nasa_item("talk", "ISS Earth Interview with Astronauts")) == 0
+    assert online._nasa_metadata_score(
+        _nasa_item("synth", "Earth From Space Timelapse Animation")) == 0
+    assert online._nasa_metadata_score(
+        _nasa_item("short", "Earth From Space Timelapse", duration="00:00:13")) == 0
+    assert online._nasa_metadata_score(
+        _nasa_item("wrong-media", "Earth From Space Timelapse",
+                   media_type="image")) == 0
+
+
+def test_nasa_manifest_chooses_hd_and_rejects_small_preview(monkeypatch):
+    entry = _nasa_item("hd", "Earth from space timelapse")
+    base = "https://images-assets.nasa.gov/video/hd/"
+    def fake(url, **kw):
+        assert "/asset/hd" in url
+        return {"collection": {"items": [
+            {"href": base + "hd~small.mp4"},
+            {"href": base + "hd~medium.mp4"},
+            {"href": base + "hd~orig.mp4"},
+            {"href": base + "hd_1080p.mp4"},
+            {"href": "https://untrusted.invalid/clip_1080p.mp4"},
+        ]}}
+    monkeypatch.setattr(online, "_http_json", fake)
+    clip, status = online._nasa_manifest(entry)
+    assert status == "ok"
+    assert clip["remote_url"] == base + "hd_1080p.mp4"
+    monkeypatch.setattr(online, "_http_json",
+                        lambda *a, **kw: {"collection": {"items": [
+                            {"href": base + "hd~small.mp4"},
+                            {"href": base + "hd~medium.mp4"}]}})
+    assert online._nasa_manifest(entry) == (None, "no_hd_candidate")
+
+
+def test_nasa_search_reaches_second_page_and_ignores_interviews(monkeypatch):
+    from urllib.parse import urlsplit, parse_qs
+    queried = []
+    base = "https://images-assets.nasa.gov/video/good/good~orig.mp4"
+    def fake(url, **kw):
+        if "/asset/" in url:
+            return {"collection": {"items": [{"href": base}]}}
+        args = parse_qs(urlsplit(url).query)
+        queried.append(args)
+        if args["q"][0] != online.NASA_SEARCH_TERMS[0]:
+            return {"collection": {"items": []}}
+        if args["page"][0] == "1":
+            return {"collection": {"items": [
+                _nasa_item("bad", "NASA Press Conference: Earth from Space Timelapse")
+                for _ in range(online.NASA_PAGE_SIZE)]}}
+        return {"collection": {"items": [
+            _nasa_item("good", "Earth from space timelapse and aurora")]}}
+    monkeypatch.setattr(online, "_http_json", fake)
+    clips = online._nasa()
+    assert [clip["name"] for clip in clips] == [
+        "Earth from space timelapse and aurora"]
+    assert any(args["page"] == ["2"] for args in queried)
+    assert online.NASA_SCAN_REPORT["rejected_metadata"] >= online.NASA_PAGE_SIZE
+    assert online.NASA_SCAN_REPORT["accepted"] == 1
+
+
+def test_nasa_search_is_sorted_by_relevance_not_manifest_completion(monkeypatch):
+    from urllib.parse import urlsplit, parse_qs
+    def fake(url, **kw):
+        if "/asset/" in url:
+            sid = url.rsplit("/", 1)[-1]
+            return {"collection": {"items": [
+                {"href": f"https://images-assets.nasa.gov/video/{sid}/{sid}~orig.mp4"}]}}
+        args = parse_qs(urlsplit(url).query)
+        if args["q"][0] == online.NASA_SEARCH_TERMS[0]:
+            return {"collection": {"items": [
+                _nasa_item("medium", "Clouds over Earth horizon"),
+                _nasa_item("best", "Earth from space timelapse aurora")]}}
+        return {"collection": {"items": []}}
+    monkeypatch.setattr(online, "_http_json", fake)
+    assert [clip["name"] for clip in online._nasa()] == [
+        "Earth from space timelapse aurora", "Clouds over Earth horizon"]
+
+
+@pytest.mark.parametrize("width,height,duration", [
+    (1280, 720, 120), (1080, 1920, 120), (1920, 1080, 8),
+    (1920, 1080, 2000), (1920, 1080, None)])
+def test_nasa_real_quality_gate_rejects_bad_input(monkeypatch, tmp_path,
+                                                   width, height, duration):
+    from app import video_conversion
+    monkeypatch.setattr(video_conversion, "probe_video",
+                        lambda path: {"width": width, "height": height})
+    monkeypatch.setattr(video_conversion, "probe_duration",
+                        lambda path: duration)
+    with pytest.raises(ValueError, match="NASA:"):
+        online._verify_scenic_video(tmp_path / "candidate.mp4", "nasa")
+
+
+def test_nasa_real_quality_gate_accepts_full_hd(monkeypatch, tmp_path):
+    from app import video_conversion
+    monkeypatch.setattr(video_conversion, "probe_video",
+                        lambda path: {"width": 1920, "height": 1080})
+    monkeypatch.setattr(video_conversion, "probe_duration", lambda path: 100.0)
+    online._verify_scenic_video(tmp_path / "candidate.mp4", "nasa")
+
+
+def test_nasa_cache_migration_discards_only_bad_nasa_files(monkeypatch, tmp_path):
+    from app import video_conversion
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    marker = tmp_path / "nasa-migration.json"
+    catalog = tmp_path / "catalog.json"
+    good = online._clip("nasa", "valid", "https://images-assets.nasa.gov/good.mp4",
+                        "Earth from space timelapse", "NASA", "https://images.nasa.gov")
+    bad = online._clip("nasa", "bad", "https://images-assets.nasa.gov/bad.mp4",
+                       "Earth horizon", "NASA", "https://images.nasa.gov")
+    apple = online._clip("apple", "valid", "https://sylvan.apple.com/apple.mp4",
+                         "Apple", "Apple", "https://apple.com")
+    for clip in (good, bad, apple):
+        (cache / (clip["id"] + ".mp4")).write_bytes(b"cached")
+        (cache / (clip["id"] + ".ready")).write_text(online.CACHE_PROFILE)
+    monkeypatch.setattr(online, "CACHE_FOLDER", cache)
+    monkeypatch.setattr(online, "CATALOG_FILE", catalog)
+    monkeypatch.setattr(online, "NASA_CACHE_CHECK_MARKER", marker)
+    monkeypatch.setattr(online.shutil, "which", lambda name: "/usr/bin/ffprobe")
+    monkeypatch.setattr(video_conversion, "probe_video",
+                        lambda path: {"width": 1280 if bad["id"] in str(path) else 1920,
+                                      "height": 720 if bad["id"] in str(path) else 1080})
+    monkeypatch.setattr(video_conversion, "probe_duration", lambda path: 120)
+    online.atomic_json(catalog, {"sources": {"nasa": {"items": [good, bad]},
+                                             "apple": {"items": [apple]}}})
+    online.verify_old_nasa_cache_once()
+    assert marker.exists()
+    assert (cache / (good["id"] + ".mp4")).exists()
+    assert not (cache / (bad["id"] + ".mp4")).exists()
+    assert (cache / (apple["id"] + ".mp4")).exists()
+    assert online.read_json(marker)["discarded"] == 1
+
+
+def test_nasa_refresh_preserves_selected_old_entries(monkeypatch, tmp_path):
+    prior = online._clip("nasa", "selected", "https://images-assets.nasa.gov/old.mp4",
+                         "Old selected", "NASA", "https://images.nasa.gov")
+    fresh = online._clip("nasa", "new", "https://images-assets.nasa.gov/new.mp4",
+                         "New scenery", "NASA", "https://images.nasa.gov")
+    catalog = tmp_path / "catalog.json"
+    online.atomic_json(catalog, {"sources": {"nasa": {"items": [prior]}}})
+    monkeypatch.setattr(online, "CATALOG_FILE", catalog)
+    monkeypatch.setattr(online, "FETCHERS", {"nasa": lambda: [fresh]})
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"nasa": True}, "online_refresh_interval_minutes": 60})
+    monkeypatch.setattr(online, "warm_cache", lambda **kw: None)
+    monkeypatch.setattr(online_library, "selected_ids", lambda: {prior["id"]})
+    monkeypatch.setattr(online, "NASA_SCAN_REPORT", {"accepted": 1, "scanned": 12})
+    online.refresh_catalog(force=True)
+    source = online.read_json(catalog)["sources"]["nasa"]
+    assert {x["id"] for x in source["items"]} == {prior["id"], fresh["id"]}
+    assert source["scan"]["scanned"] == 12
+    assert next(x for x in online.source_status() if x["id"] == "nasa")["scan"]["accepted"] == 1
