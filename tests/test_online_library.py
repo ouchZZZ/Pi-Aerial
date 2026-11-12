@@ -241,3 +241,138 @@ def test_retry_selected_failed_video_is_authenticated_and_clears_cooldown(
     assert client.post(uri, headers={"x-csrf-token": token}).status_code == 200
     assert client.post("/api/admin/online/library/bad-id/retry",
                        headers={"x-csrf-token": token}).status_code == 409
+
+
+
+def test_exclude_cancels_and_deletes_cache_persistently_and_restores(library):
+    from app import main
+    clip, output = library
+    ident = clip["id"]
+    assert online_library.is_selected(ident)
+    result = online_library.set_excluded(ident, True)
+    assert result["excluded"] == 1
+    assert not output.exists()
+    assert not output.with_suffix(".ready").exists()
+    assert online_library.selected_ids() == set()
+    assert online_library.list_videos() == []
+    assert online_library.ready_path(ident) is None
+    assert online_library.list_excluded()[0]["name"] == "Ocean"
+    assert not online_library.is_excluded({"id": "f" * 24, "provider": "apple"})
+    with pytest.raises(ValueError, match="исключён"):
+        online_library.set_selected([ident], True)
+    assert read_json(online_library.EXCLUDED_FILE)["version"] == 1
+
+    online_library.set_excluded(ident, False)
+    assert online_library.list_excluded() == []
+    visible = online_library.list_videos()
+    assert len(visible) == 1 and not visible[0]["selected"]
+    assert not output.exists()
+    assert online_library.selected_ids() == set()
+
+
+def test_archive_exclusion_applies_across_themes_and_counts(library, monkeypatch):
+    apple, apple_file = library
+    first = online._clip(
+        "ia_nature", "same-item",
+        "https://archive.org/download/same-item/river.mp4",
+        "Mountain river", "Creator", "https://archive.org/details/same-item",
+    )
+    other = online._clip(
+        "ia_timelapse", "same-item",
+        "https://archive.org/download/same-item/river.mp4",
+        "Mountain river timelapse", "Creator",
+        "https://archive.org/details/same-item",
+    )
+    atomic_json(online.CATALOG_FILE, {"sources": {
+        "apple": {"items": [apple]},
+        "ia_nature": {"items": [first]},
+        "ia_timelapse": {"items": [other]},
+    }})
+    config = {"online_sources": {"apple": True, "ia_nature": True,
+                                  "ia_timelapse": True}}
+    monkeypatch.setattr(online, "settings", lambda: config)
+    before = online_library.list_videos()
+    assert len(before) == 2  # Duplicates across IA themes collapse.
+    assert sum(s["count"] for s in online.source_status()) == 2
+
+    online_library.set_excluded(first["id"], True)
+    assert online_library.is_excluded(other)
+    assert all(not video["provider"].startswith("ia_")
+               for video in online_library.list_videos())
+    assert sum(s["count"] for s in online.source_status()) == 1
+    with pytest.raises(ValueError, match="исключён"):
+        online_library.set_selected([other["id"]], True)
+    online_library.set_excluded(first["id"], False)
+    assert len(online_library.list_videos()) == 2
+
+
+def test_archive_migration_resets_only_old_archive_once(library, monkeypatch):
+    apple, apple_file = library
+    archive = online._clip(
+        "ia_timelapse", "obsolete",
+        "https://archive.org/download/obsolete/stars.mp4",
+        "Stars Time Lapse", "Creator", "https://archive.org/details/obsolete",
+    )
+    cache = online.CACHE_FOLDER
+    archived_file = cache / (archive["id"] + ".mp4")
+    archived_file.write_bytes(b"old movie")
+    archived_file.with_suffix(".ready").write_text(online.CACHE_PROFILE)
+    atomic_json(online.CATALOG_FILE, {"sources": {
+        "apple": {"items": [apple], "updated": 100},
+        "ia_timelapse": {"items": [archive], "scan_cursor": 4},
+    }})
+    atomic_json(online.PROCESSED_FILE, {
+        "ids": [apple["id"], archive["id"]],
+        "details": {apple["id"]: {"provider": "apple", "name": "Ocean"},
+                    archive["id"]: {"provider": "ia_timelapse",
+                                    "name": "Stars Time Lapse"}},
+    })
+    atomic_json(online_library.SELECTION_FILE, {
+        "version": 1, "ids": [apple["id"], archive["id"]]})
+    assert online_library.reset_archive_catalog_once()
+    assert not archived_file.exists()
+    assert not archived_file.with_suffix(".ready").exists()
+    assert apple_file.exists()
+    assert read_json(online.CATALOG_FILE)["sources"] == {
+        "apple": {"items": [apple], "updated": 100}}
+    assert online_library.selected_ids() == {apple["id"]}
+    history = read_json(online.PROCESSED_FILE)
+    assert history["ids"] == [apple["id"]]
+    assert archive["id"] not in history["details"]
+    assert apple["id"] in history["details"]
+    assert online_library.ARCHIVE_RESET_MARKER.is_file()
+    # Newly discovered Archive videos must survive all later restarts.
+    fresh = online._clip(
+        "ia_nature", "new-nature",
+        "https://archive.org/download/new-nature/clouds.mp4",
+        "Clouds", "Creator", "https://archive.org/details/new-nature")
+    atomic_json(online.CATALOG_FILE, {"sources": {
+        "apple": {"items": [apple]},
+        "ia_nature": {"items": [fresh]}
+    }})
+    assert not online_library.reset_archive_catalog_once()
+    assert read_json(online.CATALOG_FILE)["sources"]["ia_nature"]["items"] == [fresh]
+
+
+def test_admin_exclusion_requires_login_csrf_and_can_restore(library, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main, auth
+    clip, output = library
+    auth.set_password("sample-exclusion-password")
+    client = TestClient(main.app)
+    uri = "/api/admin/online/library/" + clip["id"] + "/excluded"
+    assert client.put(uri, json={"excluded": True}).status_code == 401
+    auth_result = client.post("/api/auth/login",
+                              json={"password": "sample-exclusion-password"})
+    token = {"x-csrf-token": auth_result.json()["csrf"]}
+    assert client.put(uri, json={"excluded": True}).status_code == 403
+    assert client.put(uri, json={"excluded": True}, headers=token).status_code == 200
+    data = client.get("/api/admin/online/library").json()
+    assert data["videos"] == []
+    assert len(data["excluded"]) == 1
+    assert not output.exists()
+    assert client.put(uri, json={"excluded": False}, headers=token).status_code == 200
+    data = client.get("/api/admin/online/library").json()
+    assert data["excluded"] == []
+    assert len(data["videos"]) == 1
+    assert data["videos"][0]["selected"] is False

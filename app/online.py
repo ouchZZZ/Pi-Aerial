@@ -97,6 +97,8 @@ CACHE_FOLDER = DATA / "online_cache"
 # Round-robin order; the next turn survives application restarts.
 SOURCE_ORDER = ("robin", "apple", "nasa", *ARCHIVE_THEMES)
 DEFAULT_REFRESH_MINUTES = 60
+MIN_ARCHIVE_SECONDS = 60
+MAX_ARCHIVE_SECONDS = 1800
 CATALOG_REFRESH_LOCK = threading.Lock()
 RESERVE_BYTES = 5 * 1024 ** 3
 LOCK = threading.RLock()
@@ -268,16 +270,32 @@ def source_status() -> list[dict]:
     cfg = settings()
     raw = read_json(CATALOG_FILE).get("sources", {})
     out = []
+    from . import online_library
+    hidden = online_library.excluded_keys()
+    seen_archive = set()
     for provider, label in SOURCE_NAMES.items():
         state = raw.get(provider, {})
+        entries = state.get("items", [])
+        entries = entries if isinstance(entries, list) else []
+        visible = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key = online_library._exclusion_key(entry)
+            if key in hidden or (provider in ARCHIVE_THEMES
+                                 and key in seen_archive):
+                continue
+            visible.append(entry)
+            if provider in ARCHIVE_THEMES:
+                seen_archive.add(key)
         out.append({
             "id": provider, "name": label,
             "enabled": bool(cfg["online_sources"].get(provider, False)),
             "ready": True,
             "requires_key": False,
-            "count": len(state.get("items", [])),
+            "count": len(visible),
             "playable": sum(
-                1 for entry in state.get("items", [])
+                1 for entry in visible
                 if cached_file(entry.get("id", "")) is not None
             ),
             "error": (("Установите ffmpeg: sudo apt install -y ffmpeg"
@@ -286,7 +304,15 @@ def source_status() -> list[dict]:
                       and cfg["online_sources"].get(provider)
                       and not state.get("error") else state.get("error")),
             "last_updated": state.get("updated"),
-            "scan": state.get("scan", {}) if provider in ARCHIVE_THEMES else {},
+            "scan": ({
+                **{k: v for k, v in state.get("scan", {}).items()
+                   if k != "accepted_ids"},
+                "accepted": len(set(state.get("scan", {}).get("accepted_ids", []))
+                                & {entry.get("id") for entry in visible})
+                    if "accepted_ids" in state.get("scan", {})
+                    else min(state.get("scan", {}).get("accepted", 0),
+                             len(visible))
+            } if provider in ARCHIVE_THEMES else {}),
         })
     return out
 
@@ -622,6 +648,83 @@ def _archive_hd_widescreen(width: int, height: int) -> bool:
     return width >= 1920 and height >= 1080 and 1.74 <= width / height <= 1.82
 
 
+
+# Metadata-first screening: conservative hard negatives and topic-specific
+# visual clues. Never claim this is actual visual/content inspection.
+_ARCHIVE_REJECT = re.compile(
+    r"\b(?:anime|cartoons?|animated series|animation series|episodes?|"
+    r"full series|feature film|feature movie|gameplay|video game|let'?s play|"
+    r"conference|convention|lecture|keynote|podcast|interview|talk show|"
+    r"tutorial|how.to|workout|yoga|music video|commercial|advertisement|"
+    r"webinar|tv series|documentary series|audiobook|unboxing)\b",
+    re.IGNORECASE,
+)
+_ARCHIVE_UPSCALE = re.compile(
+    r"(?:upscal(?:ed|ing|e)|enlarged|converted)\s*(?:from|out of|of)?"
+    r"\s*(?:\d{3,4}\s*[x×]\s*\d{3,4}|(?:240|360|480|576|720)p)"
+    r"|(?:\d{3,4}\s*[x×]\s*\d{3,4}|(?:240|360|480|576|720)p)"
+    r".{0,35}\bupscal(?:ed|ing|e)\b",
+    re.IGNORECASE,
+)
+_ARCHIVE_VISUAL = {
+    "ia_nature": re.compile(
+        r"\b(?:nature|landscape|mountains?|waterfalls?|forests?|"
+        r"ocean|coastline|scenery|wilderness|aerial|drone|river|"
+        r"valley|mist|fog|scenic|beach|wildlife|desert|lake)\b", re.I),
+    "ia_cities": re.compile(
+        r"\b(?:city|cities|skyline|cityscape|urban|aerial|"
+        r"architecture|buildings?|downtown|streets?|panorama|drone)\b", re.I),
+    "ia_history": re.compile(
+        r"\b(?:histor(?:ic|ical|y)|vintage|archiv(?:al|e)|"
+        r"old city|old town|old streets?|street scenes?|"
+        r"cityscape|skyline|city streets?|urban footage|"
+        r"new york|london|paris|moscow|chicago|tokyo)\b", re.I),
+    "ia_space": re.compile(
+        r"\b(?:nasa|iss|orbit(?:al)?|space(?:craft)?|"
+        r"astronaut|satellite|earth from space|earthrise|"
+        r"moon|planetary|galax(?:y|ies)|nebula|stars?|"
+        r"cosmos|astronom(?:y|ical)|night sky)\b", re.I),
+    "ia_timelapse": re.compile(
+        r"\b(?:time[\s-]?lapse|timelapse|aurora|star trails|"
+        r"moving clouds?|night sky|long exposure)\b", re.I),
+}
+
+
+def _archive_relevant(provider: str, doc: dict, metadata: dict) -> bool:
+    title = _description(metadata.get("title"), doc.get("title"))
+    subject = metadata.get("subject") or doc.get("subject") or ""
+    if isinstance(subject, list):
+        subject = " ".join(str(v) for v in subject[:30])
+    description = _description(metadata.get("description"),
+                               doc.get("description"))
+    prominent = (title + " " + str(subject))[:2200]
+    combined = (prominent + " " + description)[:3500]
+    if _ARCHIVE_REJECT.search(prominent) or _ARCHIVE_UPSCALE.search(combined):
+        return False
+    return bool(_ARCHIVE_VISUAL[provider].search(combined))
+
+
+def _archive_duration_seconds(raw: object) -> float | None:
+    """Archive length is usually seconds, runtime sometimes HH:MM:SS."""
+    if isinstance(raw, list):
+        raw = next((part for part in raw if isinstance(part, (str, int, float))), None)
+    try:
+        if isinstance(raw, str) and ":" in raw:
+            fields = raw.strip().split(":")
+            if len(fields) not in (2, 3):
+                return None
+            values = [float(field) for field in fields]
+            seconds = 0.0
+            for value in values:
+                seconds = seconds * 60 + value
+        else:
+            seconds = float(raw)
+        return seconds if 0 < seconds < 24 * 3600 else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+
 def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
     """One Internet Archive item becomes at most one suitable HD video."""
     if not isinstance(payload, dict):
@@ -630,12 +733,18 @@ def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
     if not isinstance(metadata, dict):
         return None
     license_url = _archive_license(metadata.get("licenseurl") or doc.get("licenseurl"))
-    if license_url is None:
+    if license_url is None or not _archive_relevant(provider, doc, metadata):
         return None
     identifier = doc.get("identifier")
     if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", identifier):
         return None
     options = []
+    fallback_duration = _archive_duration_seconds(
+        metadata.get("runtime") or metadata.get("duration")
+        or doc.get("runtime") or doc.get("duration"))
+    if fallback_duration is not None and not (
+            MIN_ARCHIVE_SECONDS <= fallback_duration <= MAX_ARCHIVE_SECONDS):
+        return None
     for file in payload.get("files", [])[:250]:
         if not isinstance(file, dict):
             continue
@@ -672,7 +781,8 @@ def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
             continue
         if size < 1024 or size > 8 * 1024**3:
             continue
-        if duration and not 20 <= duration <= 1800:
+        duration = duration or fallback_duration or 0
+        if duration and not MIN_ARCHIVE_SECONDS <= duration <= MAX_ARCHIVE_SECONDS:
             continue
         url = ("https://archive.org/download/" + identifier + "/" +
                urllib.parse.quote(name, safe="/"))
@@ -779,6 +889,7 @@ def _archive_theme(provider: str) -> list[dict]:
     ARCHIVE_SCAN_REPORT[provider] = {
         "scanned": len(docs),
         "accepted": len(results),
+        "accepted_ids": [clip["id"] for clip in results],
         "unverified": sum(clip["quality_verified"] is False for clip in results),
         "queries": successful_searches,
         "page": page, "next_cursor": cursor + 1,
@@ -875,6 +986,7 @@ def list_clips() -> list[dict]:
     enabled = settings()["online_sources"]
     from . import online_library
     selected = online_library.selected_ids()
+    hidden = online_library.excluded_keys()
     result = []
     for provider, state in sources.items():
         if not enabled.get(provider, False):
@@ -888,7 +1000,8 @@ def list_clips() -> list[dict]:
             cached = cached_file(item_id) is not None
             # Online providers can publish QuickTime, HEVC or H.264.
             # Only list files already normalized to our compatible MP4 profile.
-            if not cached or item_id not in selected:
+            if (not cached or item_id not in selected
+                    or online_library._exclusion_key(item) in hidden):
                 continue
             result.append({"id": item_id, "name": item["name"],
                            "url": "/media/online/" + item_id,
@@ -914,7 +1027,9 @@ def lookup(clip_id: str) -> dict | None:
         if not enabled.get(provider, False):
             continue
         for entry in state.get("items", []):
-            if entry.get("id") == clip_id and allowed_video_url(entry.get("remote_url"), provider):
+            if (entry.get("id") == clip_id
+                    and not online_library.is_excluded(entry)
+                    and allowed_video_url(entry.get("remote_url"), provider)):
                 return entry
     return None
 
@@ -1118,7 +1233,7 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                 # Metadata is incomplete for many Archive items. Real video
                 # dimensions are the final, non-negotiable admission gate.
                 if provider in ARCHIVE_THEMES:
-                    from .video_conversion import probe_video
+                    from .video_conversion import probe_video, probe_duration
                     actual = probe_video(temp)
                     width = int(actual.get("width") or 0)
                     height = int(actual.get("height") or 0)
@@ -1126,6 +1241,12 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                         raise ValueError(
                             f"Internet Archive: неподходящее качество "
                             f"{width}×{height}; нужно не ниже 1080p и 16:9")
+                    real_duration = probe_duration(temp)
+                    if real_duration is None or not (
+                            MIN_ARCHIVE_SECONDS <= real_duration <= MAX_ARCHIVE_SECONDS):
+                        raise ValueError(
+                            "Internet Archive: длительность меньше 60 секунд "
+                            "или не подтверждена ffprobe")
                 if shutil.which("ffmpeg") is None:
                     raise ValueError("Нужен ffmpeg для подготовки видео")
                 if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:
@@ -1194,6 +1315,7 @@ def try_cache(entry: dict, stop: threading.Event | None = None) -> bool:
     from . import online_library
     with LOCK:
         if (not online_library.is_selected(ident)
+                or online_library.is_excluded(entry)
                 or (stop is not None and stop.is_set())
                 or ident in ACTIVE or cached_file(ident) is not None
                 or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
@@ -1267,7 +1389,9 @@ def warm_cache(stop: threading.Event | None = None) -> None:
                     continue
                 ident = entry.get("id", "")
                 if (not isinstance(ident, str) or len(ident) != 24
-                        or ident not in selected or cached_file(ident) is not None
+                        or ident not in selected
+                        or online_library.is_excluded(entry)
+                        or cached_file(ident) is not None
                         or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
                     continue
                 scheduled = (try_cache(entry) if stop is None

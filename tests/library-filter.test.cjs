@@ -205,5 +205,6 @@ test('ready online clips retain preview and one-shot display controls',()=>{
   assert.ok(row);
   const controls=row.children.at(-1);
   assert.ok(controls.children.some(button=>button.textContent==='Просмотр'));
-  assert.equal(controls.children.filter(button=>button.tag==='button').length,2);
+  assert.ok(controls.children.some(button=>button.textContent==='Исключить'));
+  assert.equal(controls.children.filter(button=>button.tag==='button').length,3);
 });

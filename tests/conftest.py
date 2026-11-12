@@ -13,6 +13,8 @@ def isolated_background_workers(monkeypatch, request, tmp_path):
     from app import main, online_library
     # Moderation persistence must never leak between independent tests.
     monkeypatch.setattr(online_library, "SELECTION_FILE", tmp_path / "selection.json")
+    monkeypatch.setattr(online_library, "EXCLUDED_FILE", tmp_path / "excluded.json")
+    monkeypatch.setattr(online_library, "ARCHIVE_RESET_MARKER", tmp_path / "ia-reset-v1.json")
 
     def idle(stop):
         stop.wait()
