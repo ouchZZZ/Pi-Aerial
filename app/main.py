@@ -62,6 +62,7 @@ async def lifespan(_: FastAPI):
 
 
 def _online_loop(stop: threading.Event):
+    online.verify_old_nasa_cache_once()
     while not stop.is_set():
         try:
             online.refresh_catalog(stop=stop)
