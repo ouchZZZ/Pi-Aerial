@@ -38,6 +38,8 @@ DISPLAY_PLAYBACK_STATUS: dict[str, object] = {}
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # One-time, durable migration runs before any fresh source discovery.
+    online_library.reset_archive_catalog_once()
     # A fresh event for each lifespan never reactivates prior TestClient workers.
     stop = threading.Event()
     workers = [
@@ -343,7 +345,8 @@ def online_clear_cache(_: None = Depends(auth.require_admin)):
 
 @app.get('/api/admin/online/library')
 def online_library_list(_: None = Depends(auth.require_admin)):
-    return {'videos': online_library.list_videos()}
+    return {'videos': online_library.list_videos(),
+            'excluded': online_library.list_excluded()}
 
 
 @app.get('/api/admin/online/library/{clip_id}/preview')
@@ -353,6 +356,19 @@ def online_library_preview(clip_id: str, _: None = Depends(auth.require_admin)):
         raise HTTPException(404, 'Подготовленный ролик не найден')
     return FileResponse(path, media_type='video/mp4',
                         headers={'Cache-Control': 'private, no-store'})
+
+
+class LibraryExclusion(BaseModel):
+    excluded: bool
+
+
+@app.put('/api/admin/online/library/{clip_id}/excluded')
+def online_library_exclude(clip_id: str, value: LibraryExclusion,
+                           _: None = Depends(auth.require_admin)):
+    try:
+        return online_library.set_excluded(clip_id, value.excluded)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 class LibrarySelection(BaseModel):
