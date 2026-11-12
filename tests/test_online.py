@@ -1616,3 +1616,31 @@ def test_archive_retry_stops_when_user_cancels(monkeypatch, tmp_path):
             Opener(), "https://archive.org/download/item/video.mp4",
             tmp_path / "sample.part", 8192, stop, "a" * 24)
     assert len(calls) == 1
+
+
+
+def test_nasa_and_archive_search_never_use_more_than_two_metadata_workers(
+        monkeypatch, tmp_path):
+    """The per-source search fan-out must stay small on Raspberry Pi."""
+    from concurrent.futures import ThreadPoolExecutor
+    requested_workers = []
+
+    def checked_executor(*args, **kwargs):
+        requested_workers.append(kwargs.get("max_workers"))
+        return ThreadPoolExecutor(*args, **kwargs)
+
+    def fake_json(url, **kwargs):
+        if "/search?" in url:
+            return {"collection": {"items": []}}
+        if "/advancedsearch.php?" in url:
+            return {"response": {"docs": []}}
+        raise AssertionError("Unexpected network request: " + url)
+
+    monkeypatch.setattr(online, "ThreadPoolExecutor", checked_executor)
+    monkeypatch.setattr(online, "_http_json", fake_json)
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+
+    with pytest.raises(ValueError, match="NASA"):
+        online._nasa()
+    assert online._archive_theme("ia_nature") == []
+    assert requested_workers == [2, 2]
