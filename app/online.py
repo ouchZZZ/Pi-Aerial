@@ -636,6 +636,10 @@ def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
         if file.get("private") == "true":
             continue
         resolution = _archive_resolution(file, metadata)
+        # Clearly marked SD/720p files need no expensive on-device probe.
+        lowered = name.lower()
+        if re.search(r"(?:^|[^a-z0-9])(?:360p|480p|576p|720p|sd)(?:[^a-z0-9]|$)", lowered):
+            continue
         # A missing width/height is not evidence that a file is 480p.
         # Propose it with an explicit unknown-quality label; the downloaded
         # bytes MUST pass ffprobe before they can enter the playable cache.
@@ -743,7 +747,6 @@ def _archive_theme(provider: str) -> list[dict]:
         raise ValueError("Internet Archive: все поисковые запросы недоступны: " +
                          "; ".join(errors[:2]))
     results: list[dict] = []
-    failed_metadata = 0
     def resolve(doc):
         ident = doc["identifier"]
         try:
