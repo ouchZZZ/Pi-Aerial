@@ -383,6 +383,7 @@ def test_only_bounded_mov_prefetch_one_at_a_time(monkeypatch, tmp_path):
     monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
     monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path / "cache")
     monkeypatch.setattr(online, "PROCESSED_FILE", tmp_path / "processed.json")
+    monkeypatch.setattr(online, "SCHEDULER_FILE", tmp_path / "scheduler.json")
     online.atomic_json(online.CATALOG_FILE,
                        {"sources": {"apple": {"items": clips, "updated": 1}}})
     monkeypatch.setattr(online, "settings", lambda: {
@@ -391,7 +392,7 @@ def test_only_bounded_mov_prefetch_one_at_a_time(monkeypatch, tmp_path):
     })
     monkeypatch.setattr(online.shutil, "which", lambda executable: "/usr/bin/ffmpeg")
     calls = []
-    monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]))
+    monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]) or True)
     online.warm_cache()
     assert calls == [clips[0]["id"]]
 
@@ -426,6 +427,7 @@ def test_cache_limit_pauses_without_eviction_then_resumes(monkeypatch, tmp_path)
     monkeypatch.setattr(online, "CACHE_FOLDER", cache)
     monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
     monkeypatch.setattr(online, "PROCESSED_FILE", tmp_path / "processed.json")
+    monkeypatch.setattr(online, "SCHEDULER_FILE", tmp_path / "scheduler.json")
     config = {"online_sources": {"apple": True, "nasa": False},
               "online_cache_enabled": True, "online_cache_gb": 1}
     monkeypatch.setattr(online, "settings", lambda: config)
@@ -450,7 +452,7 @@ def test_cache_limit_pauses_without_eviction_then_resumes(monkeypatch, tmp_path)
     assert status["paused"] and status["pause_reason"] == "limit"
     assert status["used_bytes"] == 1024**3
     calls = []
-    monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]))
+    monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]) or True)
     online.warm_cache()
     assert calls == []
     assert ready.exists()  # no eviction, even at the configured limit
@@ -658,3 +660,111 @@ def test_old_settings_gain_robin_source_without_losing_choices(monkeypatch, tmp_
         "apple": False, "nasa": True, "robin": False,
     }})
     assert storage.settings()["online_sources"]["robin"] is False
+
+
+def test_all_sources_get_round_robin_turns_including_nasa_after_two(monkeypatch, tmp_path):
+    """No source can hog the queue; NASA is not capped at two cached clips."""
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "SCHEDULER_FILE", tmp_path / "scheduler.json")
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"robin": True, "apple": True, "nasa": True},
+        "online_cache_enabled": True, "online_autodownload_enabled": True,
+    })
+    monkeypatch.setattr(online.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(online, "cache_status", lambda: {"paused": False})
+    urls = {
+        "robin": "https://github.com/RobinFrcd/AerialShots/releases/download/reunion-2022/",
+        "apple": "https://sylvan.apple.com/Aerials/",
+        "nasa": "https://images-assets.nasa.gov/video/",
+    }
+    clips = {
+        src: [online._clip(src, str(i), urls[src] + str(i) + ".mp4",
+                           src, src, "https://example.com") for i in range(4)]
+        for src in online.SOURCE_ORDER
+    }
+    online.atomic_json(online.CATALOG_FILE, {
+        "sources": {src: {"items": items} for src, items in clips.items()}
+    })
+    # NASA already has two videos on disk, just like the reported Pi state.
+    cached = {clip["id"] for clip in clips["nasa"][:2]}
+    done = set()
+    monkeypatch.setattr(online, "cached_file", lambda ident: tmp_path if ident in cached else None)
+    monkeypatch.setattr(online, "_processed_ids", lambda: set(done))
+    scheduled = []
+
+    def schedule(entry):
+        scheduled.append(entry)
+        done.add(entry["id"])
+        return True
+
+    monkeypatch.setattr(online, "try_cache", schedule)
+    for _ in range(6):
+        online.warm_cache()
+    assert [item["provider"] for item in scheduled] == [
+        "robin", "apple", "nasa", "robin", "apple", "nasa"
+    ]
+    assert [item["id"] for item in scheduled if item["provider"] == "nasa"] == [
+        clips["nasa"][2]["id"], clips["nasa"][3]["id"]
+    ]
+    assert online.read_json(online.SCHEDULER_FILE)["next"] == "robin"
+
+
+def test_round_robin_cursor_survives_a_restart_and_skips_disabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "SCHEDULER_FILE", tmp_path / "scheduler.json")
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"robin": False, "apple": True, "nasa": True},
+        "online_cache_enabled": True,
+    })
+    monkeypatch.setattr(online.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(online, "cache_status", lambda: {"paused": False})
+    clips = [
+        online._clip("apple", "a", "https://sylvan.apple.com/a.mp4",
+                     "Apple", "Apple", "https://apple.com"),
+        online._clip("nasa", "n", "https://images-assets.nasa.gov/n.mp4",
+                     "NASA", "NASA", "https://nasa.gov"),
+    ]
+    online.atomic_json(online.CATALOG_FILE, {
+        "sources": {"apple": {"items": [clips[0]]},
+                    "nasa": {"items": [clips[1]]}}
+    })
+    done = set()
+    monkeypatch.setattr(online, "_processed_ids", lambda: set(done))
+    monkeypatch.setattr(online, "cached_file", lambda _: None)
+    calls = []
+
+    def schedule(entry):
+        calls.append(entry["provider"])
+        done.add(entry["id"])
+        return True
+
+    monkeypatch.setattr(online, "try_cache", schedule)
+    online.warm_cache()   # Robin disabled: Apple gets the first turn
+    assert online.read_json(online.SCHEDULER_FILE)["next"] == "nasa"
+    online.warm_cache()   # Reads persisted cursor instead of resetting to Robin
+    assert calls == ["apple", "nasa"]
+
+
+def test_rejected_download_does_not_advance_round_robin(monkeypatch, tmp_path):
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "SCHEDULER_FILE", tmp_path / "scheduler.json")
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"robin": True, "apple": False, "nasa": False},
+        "online_cache_enabled": True,
+    })
+    monkeypatch.setattr(online.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(online, "cache_status", lambda: {"paused": False})
+    clip = online._clip(
+        "robin", "one",
+        "https://github.com/RobinFrcd/AerialShots/releases/download/reunion-2022/one.m4v",
+        "Robin", "Robin Fourcade", "https://github.com/RobinFrcd/AerialShots")
+    online.atomic_json(online.CATALOG_FILE,
+                       {"sources": {"robin": {"items": [clip]}}})
+    monkeypatch.setattr(online, "_processed_ids", lambda: set())
+    monkeypatch.setattr(online, "cached_file", lambda _: None)
+    monkeypatch.setattr(online, "try_cache", lambda entry: False)  # Busy slot.
+    online.warm_cache()
+    assert not online.SCHEDULER_FILE.exists()
+    monkeypatch.setattr(online, "try_cache", lambda entry: True)
+    online.warm_cache()
+    assert online.read_json(online.SCHEDULER_FILE)["next"] == "apple"
