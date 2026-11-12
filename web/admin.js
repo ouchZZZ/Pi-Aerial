@@ -292,13 +292,53 @@ function renderLibrary(onlineVideos){
   }
   if(!(status?.videos||[]).length)localRoot.append(textNode('p','Своих готовых файлов пока нет.','hint'));
 }
-$('libraryRefresh').addEventListener('click',async()=>{await load();await loadLibrary()});
+async function loadPlaybackStatus(){
+  try{
+    const data=await api('/api/admin/display/play-once/status');
+    const info=data.status;
+    const stateLabels={
+      requested:'Команда отправлена, ждём экран',
+      starting:'Плеер запускается',
+      api_ready:'API плеера загружен, ждём видео',
+      playing:'Видео воспроизводится',
+      ended:'Видео завершилось, заставка восстановлена',
+      stopped:'Воспроизведение остановлено',
+      error:'Ошибка воспроизведения'
+    };
+    const node=$('externalVideoStatus');
+    if(!info){
+      node.textContent=PiI18n.translate('Статус: запусков по ссылке пока не было');
+      return;
+    }
+    const provider=info.provider==='youtube'?'YouTube':info.provider==='vkvideo'?'VK Видео':info.provider;
+    const message=stateLabels[info.stage]||info.stage;
+    const extra=info.detail?' · '+info.detail:'';
+    node.textContent=provider+' · '+PiI18n.translate(message)+extra;
+  }catch(error){
+    $('externalVideoStatus').textContent=PiI18n.translate('Статус плеера недоступен')+' · '+error.message;
+  }
+}
+$('externalVideoForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const form=event.currentTarget,input=$('externalVideoUrl');
+  const url=input.value.trim();
+  if(!url)return;
+  setBusy(form,true);
+  try{
+    await api('/api/admin/display/play-once/url',{method:'POST',body:{url}});
+    toast('Запрос отправлен на экран заставки');
+    await loadPlaybackStatus();
+  }catch(error){toast(error.message)}
+  finally{setBusy(form,false)}
+});
+$('libraryRefresh').addEventListener('click',async()=>{await load();await loadLibrary();await loadPlaybackStatus()});
 $('stopDisplayVideo').addEventListener('click',async e=>{
   const button=e.currentTarget;
   button.disabled=true;
   try{
     await api('/api/admin/display/play-once/stop',{method:'POST'});
     toast('Команда остановки отправлена');
+    await loadPlaybackStatus();
   }catch(e){toast(e.message)}
   finally{button.disabled=false}
 });
@@ -314,7 +354,7 @@ function setBusy(form,busy){const b=form.querySelector('button');b.disabled=busy
 async function upload(formId,inputId,url){const form=$(formId);const file=$(inputId).files[0];if(!file)return;const data=new FormData();data.append('file',file);setBusy(form,true);try{const res=await api(url,{method:'POST',body:data,upload:true});toast(res.message||'Файл принят');form.reset();await load();}catch(e){toast(e.message)}finally{setBusy(form,false)}}
 $('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{const a=await api('/api/auth/login',{method:'POST',body:{password:$('password').value}});csrf=a.csrf;$('password').value='';$('loginError').textContent='';togglePanel(true);if(pendingLanguage){await api('/api/admin/config',{method:'PUT',body:{changes:{language:pendingLanguage}}});pendingLanguage=null;}await PiLocationPicker.loadTimezones();await load();}catch(err){$('loginError').textContent=err.message;}});
 $('logout').addEventListener('click',async()=>{try{await api('/api/auth/logout',{method:'POST'});}finally{csrf='';togglePanel(false)}});
-document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===tab));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='tab-'+tab.dataset.tab));if(tab.dataset.tab==='layout')PiLayoutEditor.open({status,api,toast,load});if(tab.dataset.tab==='videos')refreshVideoProgress().catch(e=>console.warn('Прогресс видео:',e));if(tab.dataset.tab==='library')load().then(loadLibrary).catch(e=>toast(e.message));}));
+document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===tab));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='tab-'+tab.dataset.tab));if(tab.dataset.tab==='layout')PiLayoutEditor.open({status,api,toast,load});if(tab.dataset.tab==='videos')refreshVideoProgress().catch(e=>console.warn('Прогресс видео:',e));if(tab.dataset.tab==='library')load().then(loadLibrary).then(loadPlaybackStatus).catch(e=>toast(e.message));}));
 $('settingsForm').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget;const changes={};for(const name of ['show_clock','show_date','show_weather','night_mode'])changes[name]=f.elements[name].checked;for(const name of ['city','timezone','time_format','video_mode'])changes[name]=f.elements[name].value;for(const name of ['latitude','longitude','night_opacity'])changes[name]=Number(f.elements[name].value);for(const name of ['video_interval_minutes','night_start','night_end'])changes[name]=Number(f.elements[name].value);changes.night_opacity/=100;try{await api('/api/admin/config',{method:'PUT',body:{changes}});$('settingsMessage').textContent='Сохранено';toast('Настройки применены');await load();}catch(e){toast(e.message)}});
 $('autoUpdateForm').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget;const interval=Number(f.elements.auto_update_interval_minutes.value);if(!Number.isInteger(interval)||interval<1){toast('Интервал автообновления должен быть целым числом минут не меньше 1');return;}const changes={auto_update_enabled:f.elements.auto_update_enabled.checked,auto_update_interval_minutes:interval};try{await api('/api/admin/config',{method:'PUT',body:{changes}});$('autoUpdateMessage').textContent='Сохранено';toast('Настройки применены');await load();}catch(e){toast(e.message)}});
 $('settingsForm').elements.night_opacity.addEventListener('input',updateNightValue);
@@ -417,6 +457,11 @@ setInterval(()=>{
     load().then(loadLibrary).catch(e=>console.warn('Список готовых видео:',e));
   }
 },15000);
+setInterval(()=>{
+  if(!$('panel').hidden && document.querySelector('.tab.active')?.dataset.tab==='library'){
+    loadPlaybackStatus();
+  }
+},3000);
 
 $('onlineAutodownload').addEventListener('change',async e=>{
   const check=e.currentTarget;

@@ -12,6 +12,7 @@ import urllib.error
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 from zoneinfo import available_timezones
 from urllib.parse import quote
 
@@ -20,7 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress, osd_fonts, update_control
+from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress, osd_fonts, update_control, video_sources
 from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, atomic_json, init_data,
                       read_json, safe_id, settings, update_settings)
 
@@ -32,6 +33,7 @@ VIDEO_EXTENSIONS = {'.mp4', '.webm', '.m4v', '.mov', '.mkv'}
 DISPLAY_REQUEST_WINDOW = 30
 DISPLAY_MEDIA_WINDOW = 24 * 60 * 60
 DISPLAY_REQUESTS: dict[str, tuple[float, str, str]] = {}
+DISPLAY_PLAYBACK_STATUS: dict[str, object] = {}
 
 
 @asynccontextmanager
@@ -78,11 +80,18 @@ app.mount('/assets', StaticFiles(directory=WEB), name='assets')
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    # The interactive OSM map requires an Origin/Referer on tile requests.
-    # Send only the site's origin (never the admin path or credentials).
+    # A screensaver never needs to capture camera or microphone. Deny it also
+    # inside third-party video iframes, without restricting media playback.
+    if request.url.path == '/':
+        response.headers['Permissions-Policy'] = 'camera=(), microphone=()'
+    # The OSM map and YouTube's official iframe player require an HTTP Referer.
+    # Only the public display and admin documents may send their origin across
+    # sites. Keep private API endpoints and media URLs at no-referrer.
+    # YouTube error 153 is triggered when the display suppresses this header.
     response.headers['Referrer-Policy'] = ('strict-origin-when-cross-origin'
-                                            if request.url.path == '/admin' else 'no-referrer')
-    response.headers.setdefault('Cache-Control', 'no-store' if request.url.path.startswith(('/api/', '/assets/', '/admin')) else 'public, max-age=300')
+                                            if request.url.path in ('/', '/admin') else 'no-referrer')
+    # An updated kiosk document must not reuse a stale referrer policy.
+    response.headers.setdefault('Cache-Control', 'no-store' if request.url.path == '/' or request.url.path.startswith(('/api/', '/assets/', '/admin')) else 'public, max-age=300')
     if request.url.path.startswith('/admin'):
         response.headers['X-Frame-Options'] = 'DENY'
     return response
@@ -142,6 +151,16 @@ def ready_local_video(filename: str) -> Path:
     return path
 
 
+class PlayURL(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+class PlayReport(BaseModel):
+    id: str = Field(min_length=8, max_length=128)
+    stage: Literal['starting', 'api_ready', 'playing', 'ended', 'error']
+    detail: str = Field(default='', max_length=160)
+
+
 def ready_display_video(source: str, name: str) -> Path:
     if source == 'local':
         return ready_local_video(name)
@@ -161,13 +180,60 @@ def request_display_video(source: str, name: str, _: None = Depends(auth.require
             if now - created >= DISPLAY_MEDIA_WINDOW:
                 del DISPLAY_REQUESTS[token]
         DISPLAY_REQUESTS[secrets.token_urlsafe(24)] = (now, source, name)
+        DISPLAY_PLAYBACK_STATUS.clear()
     return {'ok': True}
+
+
+@app.post('/api/admin/display/play-once/url')
+def request_display_url(payload: PlayURL, _: None = Depends(auth.require_admin)):
+    try:
+        resolved = video_sources.resolve(payload.url)
+    except video_sources.InvalidVideoURL as exc:
+        raise HTTPException(422, str(exc)) from exc
+    with LOCK:
+        now = time.monotonic()
+        for token, (created, _, _) in list(DISPLAY_REQUESTS.items()):
+            if now - created >= DISPLAY_MEDIA_WINDOW:
+                del DISPLAY_REQUESTS[token]
+        DISPLAY_REQUESTS[secrets.token_urlsafe(24)] = (
+            now, resolved.provider, resolved.video_id)
+        DISPLAY_PLAYBACK_STATUS.clear()
+        DISPLAY_PLAYBACK_STATUS.update({
+            'provider': resolved.provider, 'stage': 'requested',
+            'detail': '', 'updated_at': int(time.time())})
+    return {'ok': True, 'provider': resolved.provider}
 
 
 @app.post('/api/admin/display/play-once/stop')
 def stop_display_video(_: None = Depends(auth.require_admin)):
     with LOCK:
         DISPLAY_REQUESTS.clear()
+        if DISPLAY_PLAYBACK_STATUS:
+            DISPLAY_PLAYBACK_STATUS.update({'stage': 'stopped', 'detail': '', 'updated_at': int(time.time())})
+    return {'ok': True}
+
+
+@app.get('/api/admin/display/play-once/status')
+def display_playback_status(_: None = Depends(auth.require_admin)):
+    with LOCK:
+        return {'status': dict(DISPLAY_PLAYBACK_STATUS) if DISPLAY_PLAYBACK_STATUS else None}
+
+
+@app.post('/api/display/play-once/report')
+def display_playback_report(report: PlayReport):
+    # This endpoint is write-only for the kiosk. The bearer token comes from
+    # the already-public playback command and never authorizes admin actions.
+    # Ignore stale reports from a previous iframe after a stop or new request.
+    with LOCK:
+        token = next(reversed(DISPLAY_REQUESTS), None)
+        command = DISPLAY_REQUESTS.get(report.id)
+        if token != report.id or command is None or command[1] not in video_sources.providers():
+            raise HTTPException(404)
+        if time.monotonic() - command[0] >= DISPLAY_MEDIA_WINDOW:
+            raise HTTPException(404)
+        DISPLAY_PLAYBACK_STATUS.update({
+            'provider': command[1], 'stage': report.stage,
+            'detail': report.detail, 'updated_at': int(time.time())})
     return {'ok': True}
 
 
@@ -177,7 +243,10 @@ def display_video_request():
         token = next(reversed(DISPLAY_REQUESTS), None)
         if token is None:
             return {'stop': True}
-        if time.monotonic() - DISPLAY_REQUESTS[token][0] < DISPLAY_REQUEST_WINDOW:
+        created, source, name = DISPLAY_REQUESTS[token]
+        if time.monotonic() - created < DISPLAY_REQUEST_WINDOW:
+            if source in video_sources.providers():
+                return {'id': token, **video_sources.describe(source, name)}
             return {'id': token, 'url': '/api/display/play-once/' + token}
     return None
 

@@ -97,3 +97,13 @@ test('ready library summary translates completely',()=>{
   assert.equal(i18n.translate('Готово: 38 · удалено, но сохранено в истории: 0 · всего на диске: 4.37 ГБ'),
     'Ready: 38 · deleted, retained in history: 0 · total on disk: 4.37 GB');
 });
+
+test('URL player hint translates both video providers',()=>{
+  const {i18n}=makeLocalization();
+  i18n.setLocale('en');
+  const ru='Поддерживаются YouTube и VK Видео (vkvideo.ru, vk.com, vk.ru). Для закрытых роликов VK используйте ссылку из «Поделиться → Код для встраивания» с hash. Видео не скачивается и не попадает в кеш. Ручной показ со звуком; максимум 1080p запрашивается у VK, но платформы могут выбирать качество автоматически.';
+  const en=i18n.translate(ru);
+  assert.match(en,/YouTube and VK Video/);
+  assert.match(en,/1080p/);
+  assert.match(en,/not downloaded or cached/);
+});
