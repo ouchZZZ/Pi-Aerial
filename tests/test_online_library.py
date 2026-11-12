@@ -1,4 +1,4 @@
-"""Prepared online library: metadata, no-redownload journal and admin safety."""
+"""Moderated online library: safe migrations, explicit queueing and admin safety."""
 from __future__ import annotations
 
 import pytest
@@ -14,6 +14,8 @@ def library(tmp_path, monkeypatch):
     monkeypatch.setattr(online, "CACHE_FOLDER", cache)
     monkeypatch.setattr(online, "PROCESSED_FILE", tmp_path / "processed.json")
     monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "SCHEDULER_FILE", tmp_path / "scheduler.json")
+    monkeypatch.setattr(online_library, "SELECTION_FILE", tmp_path / "selection.json")
     clip = online._clip(
         "apple", "sample", "https://sylvan.apple.com/video.mov",
         "Ocean", "Apple Aerial", "https://www.apple.com/tv/",
@@ -28,7 +30,7 @@ def library(tmp_path, monkeypatch):
     return clip, output
 
 
-def test_catalog_description_preserved_and_shown_to_player(monkeypatch):
+def test_catalog_description_preserved_and_shown_to_player(monkeypatch, tmp_path):
     monkeypatch.setattr(online, "_apple_manifest", lambda: {"assets": [{
         "id": "ocean", "description": "Aerial over the coast",
         "url-1080-SDR": "https://sylvan.apple.com/ocean.mov",
@@ -37,86 +39,111 @@ def test_catalog_description_preserved_and_shown_to_player(monkeypatch):
     assert clip["description"] == "Aerial over the coast"
     assert online._description("<p>Blue&nbsp;water</p>") == "Blue water"
 
-    monkeypatch.setattr(online, "CATALOG_FILE", None)
-    # Explicitly set the catalog for the playlist without performing a network call.
-    from pathlib import Path
-    import tempfile
-    with tempfile.TemporaryDirectory() as folder:
-        p = Path(folder) / "catalog.json"
-        monkeypatch.setattr(online, "CATALOG_FILE", p)
-        atomic_json(p, {"sources": {"apple": {"items": [clip]}}})
-        monkeypatch.setattr(online, "settings", lambda: {
-            "online_sources": {"apple": True}, "online_cache_enabled": True
-        })
-        monkeypatch.setattr(online, "cached_file", lambda clip_id: p)
-        assert online.list_clips()[0]["description"] == "Aerial over the coast"
+    path = tmp_path / "catalog.json"
+    monkeypatch.setattr(online, "CATALOG_FILE", path)
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path / "cache")
+    atomic_json(path, {"sources": {"apple": {"items": [clip]}}})
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"apple": True}, "online_cache_enabled": True
+    })
+    monkeypatch.setattr(online, "cached_file", lambda clip_id: path)
+    assert online.list_clips() == []  # Not selected yet.
+    online_library.set_selected([clip["id"]], True)
+    assert online.list_clips()[0]["description"] == "Aerial over the coast"
 
 
-def test_delete_keeps_history_and_allows_explicit_redownload(library):
+def test_first_migration_selects_ready_files_only(library, monkeypatch):
     clip, output = library
     ident = clip["id"]
+    # The previously installed cached file must survive the new policy.
+    assert online_library.selected_ids() == {ident}
+    assert read_json(online_library.SELECTION_FILE) == {
+        "version": 1, "ids": [ident]
+    }
+    assert online_library.list_videos()[0]["selected"]
     online_library.remember(ident, clip)
-    assert online_library.list_videos()[0]["description"] == "Beautiful waves in the morning"
-    with pytest.raises(ValueError, match="Сначала удалите"):
-        online_library.allow_redownload(ident)
-    assert online_library.delete_video(ident)
+    # User removes the check. History remains, file is deleted.
+    result = online_library.set_selected([ident], False)
+    assert result["ok"]
     assert not output.exists()
-    saved = read_json(online.PROCESSED_FILE)
-    assert ident in saved["ids"]
-    assert saved["details"][ident]["description"] == "Beautiful waves in the morning"
-    missing = online_library.list_videos()
-    assert len(missing) == 1
-    assert not missing[0]["cached"]
-    assert missing[0]["can_redownload"]
-    assert missing[0]["description"] == "Beautiful waves in the morning"
-    assert online_library.allow_redownload(ident)
-    assert ident not in online._processed_ids()
-    assert online_library.list_videos() == []
+    assert not online_library.is_selected(ident)
+    assert read_json(online.PROCESSED_FILE)["details"][ident]["description"] == (
+        "Beautiful waves in the morning")
+    assert len(online_library.list_videos()) == 1
+    # Re-select with old processed ID and download can occur again.
+    online_library.set_selected([ident], True)
+    assert online_library.is_selected(ident)
+    assert not output.exists()
 
 
-def test_unblock_rejects_unavailable_catalog(library):
+def test_new_catalog_items_start_unselected(library):
     clip, output = library
-    online_library.delete_video(clip["id"])
-    atomic_json(online.CATALOG_FILE, {"sources": {}})
-    with pytest.raises(ValueError, match="каталоге"):
-        online_library.allow_redownload(clip["id"])
+    other = online._clip("apple", "new", "https://sylvan.apple.com/new.mov",
+                         "New", "Apple", "https://www.apple.com/tv/")
+    atomic_json(online.CATALOG_FILE, {"sources": {
+        "apple": {"items": [clip, other]}
+    }})
+    listed = online_library.list_videos()
+    assert len(listed) == 2
+    assert next(v for v in listed if v["id"] == other["id"])["selected"] is False
+    assert online_library.selected_ids() == {clip["id"]}
 
 
-def test_deletion_rejects_running_or_invalid_id(library):
+def test_only_catalog_known_ids_can_be_selected(library):
+    clip, _ = library
+    with pytest.raises(ValueError, match="не найден"):
+        online_library.set_selected(["f" * 24], True)
+    with pytest.raises(ValueError, match="идентификатор"):
+        online_library.set_selected(["../../../etc/passwd"], False)
+    with pytest.raises(ValueError, match="Неверная команда"):
+        online_library.set_selected([], True)
+
+
+def test_deselection_cancels_running_download(library):
+    import threading
     clip, output = library
-    assert not online_library.delete_video("../escape")
-    assert online_library.ready_path("../escape") is None
-    online.ACTIVE.add(clip["id"])
+    ident = clip["id"]
+    event = threading.Event()
+    online.CANCEL_EVENTS[ident] = event
+    online.ACTIVE.add(ident)
     try:
-        with pytest.raises(ValueError, match="обрабатывается"):
-            online_library.delete_video(clip["id"])
-        assert output.exists()
+        online_library.set_selected([ident], False)
+        assert event.is_set()
+        assert output.exists()  # Active worker owns the file and will clean it.
     finally:
-        online.ACTIVE.discard(clip["id"])
+        online.ACTIVE.discard(ident)
+        online.CANCEL_EVENTS.pop(ident, None)
+    online_library.cleanup_unselected()
+    assert not output.exists()
 
 
-def test_admin_library_requires_login_and_csrf(library, monkeypatch):
+def test_admin_moderation_requires_login_and_csrf(library, monkeypatch):
     from fastapi.testclient import TestClient
     from app import main, auth
-
     clip, output = library
     auth.set_password("sample-library-password")
     monkeypatch.setattr(online, "warm_cache", lambda: None)
     client = TestClient(main.app)
     ident = clip["id"]
     base = "/api/admin/online/library"
+    payload = {"ids": [ident], "selected": False}
     assert client.get(base).status_code == 401
     assert client.get(base + "/" + ident + "/preview").status_code == 401
-    assert client.delete(base + "/" + ident).status_code == 401
+    assert client.post(base + "/selection", json=payload).status_code == 401
     result = client.post("/api/auth/login", json={"password": "sample-library-password"})
     assert result.status_code == 200
     csrf = {"x-csrf-token": result.json()["csrf"]}
     assert client.get(base).json()["videos"][0]["cached"]
     assert client.get(base + "/" + ident + "/preview").status_code == 200
-    assert client.delete(base + "/" + ident).status_code == 403
-    assert client.delete(base + "/" + ident, headers=csrf).status_code == 200
-    assert client.post(base + "/" + ident + "/redownload", headers=csrf).status_code == 200
-    assert client.get(base).json()["videos"] == []
+    assert client.post(base + "/selection", json=payload).status_code == 403
+    assert client.post(base + "/selection", json=payload, headers=csrf).status_code == 200
+    assert client.get(base).json()["videos"][0]["selected"] is False
+    assert not output.exists()
+    assert client.post(base + "/selection", json={"ids": ["bad"], "selected": True},
+                       headers=csrf).status_code == 422
+    assert client.put(base + "/" + ident + "/selection",
+                      json={"ids": [ident], "selected": True}, headers=csrf).status_code == 200
+    assert client.get(base).json()["videos"][0]["selected"] is True
 
 
 def test_one_shot_accepts_both_ready_sources(library, tmp_path, monkeypatch):
