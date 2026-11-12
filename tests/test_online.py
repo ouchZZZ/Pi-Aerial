@@ -694,7 +694,7 @@ def test_all_sources_get_round_robin_turns_including_nasa_after_two(monkeypatch,
     clips = {
         src: [online._clip(src, str(i), urls[src] + str(i) + ".mp4",
                            src, src, "https://example.com") for i in range(4)]
-        for src in online.SOURCE_ORDER
+        for src in ("robin", "apple", "nasa")
     }
     online.atomic_json(online.CATALOG_FILE, {
         "sources": {src: {"items": items} for src, items in clips.items()}
