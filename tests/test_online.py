@@ -712,6 +712,7 @@ def test_all_sources_get_round_robin_turns_including_nasa_after_two(monkeypatch,
     def schedule(entry):
         scheduled.append(entry)
         done.add(entry["id"])
+        cached.add(entry["id"])  # Simulate completed work, not just old processed history.
         return True
 
     monkeypatch.setattr(online, "try_cache", schedule)
