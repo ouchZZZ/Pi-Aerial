@@ -355,29 +355,35 @@ def online_library_preview(clip_id: str, _: None = Depends(auth.require_admin)):
                         headers={'Cache-Control': 'private, no-store'})
 
 
-@app.delete('/api/admin/online/library/{clip_id}')
-def online_library_delete(clip_id: str, _: None = Depends(auth.require_admin)):
-    try:
-        deleted = online_library.delete_video(clip_id)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    if not deleted:
-        raise HTTPException(404, 'Подготовленный ролик не найден')
-    return {'ok': True}
+class LibrarySelection(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=500)
+    selected: bool
 
 
-@app.post('/api/admin/online/library/{clip_id}/redownload')
-def online_library_redownload(clip_id: str, _: None = Depends(auth.require_admin)):
+@app.put('/api/admin/online/library/{clip_id}/selection')
+def online_library_choose(clip_id: str, value: LibrarySelection,
+                          _: None = Depends(auth.require_admin)):
+    if value.ids != [clip_id]:
+        raise HTTPException(422, 'Несоответствие идентификатора')
     try:
-        updated = online_library.allow_redownload(clip_id)
+        result = online_library.set_selected(value.ids, value.selected)
     except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    if not updated:
-        raise HTTPException(404, 'Блокировка повторной загрузки не найдена')
-    # Normal serial queue resumes on the next scheduler cycle; only one job
-    # can start, and only if current cache/disk limits still allow it.
-    online.warm_cache()
-    return {'ok': True}
+        raise HTTPException(422, str(exc)) from exc
+    if value.selected:
+        online.warm_cache()
+    return result
+
+
+@app.post('/api/admin/online/library/selection')
+def online_library_choose_multiple(value: LibrarySelection,
+                                   _: None = Depends(auth.require_admin)):
+    try:
+        result = online_library.set_selected(value.ids, value.selected)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if value.selected:
+        online.warm_cache()
+    return result
 
 
 @app.post('/api/admin/online/refresh')
