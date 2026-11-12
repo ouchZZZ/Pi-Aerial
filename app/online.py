@@ -1,6 +1,6 @@
 """Online catalogs, sequential preparation and durable processed history.
 
-Apple videos are downloaded one at a time and normalized for Raspberry Pi.
+Apple, NASA and Robin Fourcade videos share one sequential preparation pipeline.
 Compatible H.264 is remuxed without lossy re-encoding.
 At the configured cache limit the worker pauses without evicting ready videos.
 """
@@ -33,12 +33,13 @@ from .storage import DATA, atomic_json, read_json, settings, max_online_cache_gb
 from .video_conversion import normalize_video
 from . import video_progress
 
-SOURCE_NAMES = {"apple": "Apple Aerial", "nasa": "NASA"}
+SOURCE_NAMES = {"apple": "Apple Aerial", "nasa": "NASA", "robin": "Robin Fourcade"}
 SOURCE_URLS = {
     "apple": ("https://sylvan.apple.com/itunes-assets/Aerials126/v4/"
               "c0/45/d9/c045d9d0-9606-1535-62fe-189edb4f79eb/"
               "resources-atv-23J-2.tar"),
     "nasa": "https://images-api.nasa.gov/search",
+    "robin": "https://raw.githubusercontent.com/RobinFrcd/AerialShots/master/entries.json",
 }
 CATALOG_FILE = DATA / "online_catalog.json"
 PROCESSED_FILE = DATA / "online_processed.json"
@@ -70,6 +71,15 @@ def allowed_video_url(url: str, provider: str) -> bool:
             "apple": ("apple.com", "mzstatic.com"),
             "nasa": ("nasa.gov",),
         }.get(provider, ())
+        if provider == "robin":
+            # GitHub release downloads redirect to signed GitHub asset CDN URLs.
+            # Never accept an arbitrary repository or third-party media host.
+            return (
+                host == "github.com" and parsed.path.startswith(
+                    "/RobinFrcd/AerialShots/releases/download/")
+                or host in ("release-assets.githubusercontent.com",
+                            "objects.githubusercontent.com")
+            )
         return any(host == d or host.endswith("." + d) for d in suffix)
     except (ValueError, AttributeError):
         return False
@@ -181,7 +191,7 @@ def source_status() -> list[dict]:
             ),
             "error": (("Установите ffmpeg: sudo apt install -y ffmpeg"
                        if shutil.which("ffmpeg") is None else None)
-                      if provider in ("apple", "nasa")
+                      if provider in ("apple", "nasa", "robin")
                       and cfg["online_sources"].get(provider)
                       and not state.get("error") else state.get("error")),
             "last_updated": state.get("updated"),
@@ -416,7 +426,56 @@ def _nasa() -> list[dict]:
     return result[:40]
 
 
-FETCHERS = {"apple": _apple, "nasa": _nasa}
+def _robin() -> list[dict]:
+    """Robin Fourcade's official AerialShots catalog, with 1080p preference.
+
+    Videos are independently published on GitHub Releases. They are downloaded
+    only on the local device and go through the existing cache/normalizer.
+    """
+    manifest = _http_json(SOURCE_URLS["robin"], timeout=15)
+    assets = manifest.get("assets") if isinstance(manifest, dict) else None
+    if not isinstance(assets, list):
+        raise ValueError("Robin Fourcade: invalid entries.json")
+    result: list[dict] = []
+    seen: set[str] = set()
+    # Prefer 1080p AVC, then other 1080p variants; use 4K when HD is absent.
+    priorities = ("url-1080-H264", "url-1080-SDR", "url-1080-HDR",
+                  "url-4K-SDR", "url-4K-HDR")
+    for entry in assets[:250]:
+        if not isinstance(entry, dict):
+            continue
+        source_id = entry.get("id")
+        if not isinstance(source_id, str) or not source_id or len(source_id) > 160:
+            continue
+        if source_id in seen:
+            continue
+        candidates = [
+            entry.get(key) for key in priorities
+            if isinstance(entry.get(key), str)
+            and allowed_video_url(entry[key], "robin")
+        ]
+        if not candidates:
+            continue
+        seen.add(source_id)
+        title = _description(entry.get("title"), entry.get("name"), source_id)
+        points = entry.get("pointsOfInterest")
+        details = [
+            text for text in (points.values() if isinstance(points, dict) else [])
+            if isinstance(text, str)
+        ]
+        description = _description(entry.get("description"), *details,
+                                   entry.get("accessibilityLabel"))
+        clip = _clip("robin", source_id, candidates[0], title,
+                     "Robin Fourcade (AerialShots)",
+                     "https://github.com/RobinFrcd/AerialShots", description)
+        if clip:
+            clip["name_en"] = title
+            clip["description_en"] = description
+            result.append(clip)
+    return result
+
+
+FETCHERS = {"apple": _apple, "nasa": _nasa, "robin": _robin}
 
 
 def refresh_catalog(force=False, stop: threading.Event | None = None) -> None:
@@ -446,15 +505,15 @@ def refresh_catalog(force=False, stop: threading.Event | None = None) -> None:
                 raise ValueError("Каталог пуст или не содержит подходящих MP4")
             state = {"updated": time.time(), "attempted": attempted,
                      "items": clips, "error": None,
-                     "feed": "tvos26" if name == "apple" else "nasa"}
+                     "feed": {"apple": "tvos26", "nasa": "nasa", "robin": "aerialshots"}.get(name, name)}
         except Exception as exc:
             state["attempted"] = attempted
             state["error"] = str(exc)[:180]
             print(f"[online] {name}: {exc}", flush=True)
         sources[name] = state
         changed = True
-        # Make new Apple assets available to the sequential worker immediately.
-        if name in ("apple", "nasa"):
+        # Make new assets available to the shared sequential worker immediately.
+        if name in ("apple", "nasa", "robin"):
             with LOCK:
                 atomic_json(CATALOG_FILE, {"sources": sources})
             if stop is None:
@@ -481,9 +540,9 @@ def list_clips() -> list[dict]:
             if not isinstance(item_id, str) or len(item_id) != 24:
                 continue
             cached = cached_file(item_id) is not None
-            # Apple and NASA publish a mix of QuickTime, HEVC and H.264.
+            # Online providers can publish QuickTime, HEVC or H.264.
             # Only list files already normalized to our compatible MP4 profile.
-            if provider in ("apple", "nasa") and not cached:
+            if provider in ("apple", "nasa", "robin") and not cached:
                 continue
             result.append({"id": item_id, "name": item["name"],
                            "url": "/media/online/" + item_id,
@@ -764,14 +823,14 @@ def warm_cache(stop: threading.Event | None = None) -> None:
     with LOCK:
         catalog = read_json(CATALOG_FILE).get("sources", {})
     done = _processed_ids()
-    for provider in ("apple", "nasa"):
+    for provider in ("robin", "apple", "nasa"):
         if not cfg.get("online_sources", {}).get(provider, False):
             continue
         items = catalog.get(provider, {}).get("items", [])
         candidates = [entry for entry in items if isinstance(entry, dict)
                       and allowed_video_url(entry.get("remote_url"), provider)]
-        # NASA retains its small warm set; Apple prepares all unique clips one
-        # at a time, with bounded cache and a persistent no-redownload journal.
+        # NASA retains its small warm set; Robin and Apple prepare unique clips
+        # one at a time, with bounded cache and a persistent no-redownload journal.
         if provider == "nasa" and sum(
                 cached_file(e.get("id", "")) is not None for e in candidates) >= 2:
             continue
