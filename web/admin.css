@@ -29,6 +29,15 @@
 .library-source-filters button{border:1px solid #afcbd4;background:#e7f5f7;color:#176879;border-radius:9px;padding:9px 13px;font-weight:700}
 .library-source-filters button:disabled{cursor:default;opacity:.6}
 [hidden]{display:none!important}
+.library-bulk-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+.library-bulk-actions button,#libraryShowMore{border:1px solid #b8d3db;background:#f5fafc;color:#23566b;border-radius:9px;padding:9px 13px;font-weight:650}
+.library-entry{align-items:flex-start}
+.library-entry .library-pick{flex:0 0 auto;accent-color:#16869b;margin-top:4px;transform:scale(1.15)}
+.library-entry .library-thumb{width:100px;max-width:25vw;aspect-ratio:16/9;object-fit:cover;border-radius:8px;background:#edf3f5}
+.library-entry .library-info{min-width:0;flex:1}
+.library-entry .library-info strong{overflow-wrap:anywhere}
+.library-entry .library-actions{align-self:center}
+@media(max-width:750px){.library-entry{flex-wrap:wrap}.library-entry .library-info{flex-basis:60%}.library-entry .library-actions{width:100%;justify-content:flex-start}}
 /* Map picker is only loaded when the admin opens it; source selection works without maps. */
 .language-picker{display:flex;align-items:center;gap:7px;font-size:12px;color:#bed5dc}
 .language-picker select{padding:6px 9px;border-radius:7px;background:#152d3b;color:#fff;border:1px solid #486372;min-width:85px}
