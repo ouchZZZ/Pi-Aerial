@@ -15,6 +15,17 @@ MIT License относится только к исходному коду Pi Ae
 
 Apple и Apple TV являются товарными знаками Apple Inc.
 
+## Robin Fourcade (AerialShots)
+
+The source catalog is fetched from the author's public repository:
+https://github.com/RobinFrcd/AerialShots
+
+Pi Aerial does not bundle or redistribute these videos. The author publishes
+HD/4K download links and instructions for local Linux screensaver playback.
+Copyright in the videos remains with Robin Fourcade; the Pi Aerial MIT
+license does not apply to them. Users should respect the author's conditions
+and any applicable third-party rights.
+
 ## NASA Image and Video Library
 
 Возможны права третьих лиц и ограничения использования изображений людей

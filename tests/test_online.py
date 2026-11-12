@@ -131,7 +131,7 @@ def test_cache_maximum_tracks_disk_size(monkeypatch, tmp_path):
 
 
 def test_source_settings_validation():
-    valid = {"apple": True, "nasa": True}
+    valid = {"apple": True, "nasa": True, "robin": True}
     update_settings({"online_sources": valid, "online_cache_gb": 12})
     with pytest.raises(ValueError):
         update_settings({"online_sources": {"apple": True}})
@@ -587,3 +587,74 @@ def test_cancelled_cache_worker_never_starts_network_and_releases_slot(monkeypat
     online._cache_worker(entry, slot, stop)
     assert slot.acquire(blocking=False)
     assert entry["id"] not in online.ACTIVE
+
+
+def test_robin_catalog_prefers_1080_and_keeps_attribution(monkeypatch):
+    media = "https://github.com/RobinFrcd/AerialShots/releases/download/norway-2021-v1/"
+    data = {"assets": [
+        {"id": "a", "title": "Norway Coast",
+         "pointsOfInterest": {"0": "Flying over a Norwegian fjord"},
+         "url-4K-SDR": media + "fourk.m4v",
+         "url-1080-H264": media + "hd.m4v"},
+        {"id": "b", "title": "Mountain",
+         "url-4K-SDR": media + "mountain4k.m4v"},
+        {"id": "c", "title": "Untrusted",
+         "url-1080-H264": "https://evil.example/bad.m4v"},
+        {"id": "a", "title": "Duplicate", "url-4K-SDR": media + "duplicate.m4v"},
+    ]}
+    monkeypatch.setattr(online, "_http_json", lambda url, **kw: data)
+    clips = online._robin()
+    assert len(clips) == 2
+    assert clips[0]["provider"] == "robin"
+    assert clips[0]["remote_url"].endswith("/hd.m4v")
+    assert clips[1]["remote_url"].endswith("/mountain4k.m4v")
+    assert clips[0]["credit"].startswith("Robin Fourcade")
+    assert clips[0]["description"] == "Flying over a Norwegian fjord"
+    assert clips[0]["name_en"] == "Norway Coast"
+    assert clips[0]["description_en"] == clips[0]["description"]
+
+
+def test_robin_restricts_github_urls_and_redirects():
+    base = "https://github.com/RobinFrcd/AerialShots/releases/download/"
+    assert online.allowed_video_url(base + "reunion-2022/clip.m4v", "robin")
+    assert online.allowed_video_url("https://release-assets.githubusercontent.com/asset?sig=abc", "robin")
+    assert not online.allowed_video_url("https://github.com/anyone/other/releases/download/clip", "robin")
+    assert not online.allowed_video_url("http://github.com/RobinFrcd/AerialShots/releases/download/a", "robin")
+    assert not online.allowed_video_url("https://github.com.evil.test/a", "robin")
+    assert not online.allowed_video_url("https://127.0.0.1/file.m4v", "robin")
+    import urllib.request
+    redirect = online.SafeRedirect("robin")
+    req = urllib.request.Request(base + "reunion-2022/clip.m4v")
+    with pytest.raises(ValueError, match="untrusted"):
+        redirect.redirect_request(req, None, 302, "Moved", {},
+                                  "https://evil.example/private.m4v")
+
+
+def test_robin_clips_appear_only_after_normalization(monkeypatch, tmp_path):
+    clip = online._clip(
+        "robin", "reunion", "https://github.com/RobinFrcd/AerialShots/releases/download/"
+        "reunion-2022/clip.m4v", "Reunion", "Robin Fourcade",
+        "https://github.com/RobinFrcd/AerialShots", "Island")
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    online.atomic_json(online.CATALOG_FILE,
+                       {"sources": {"robin": {"items": [clip], "updated": 1}}})
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_sources": {"robin": True},
+    })
+    assert online.lookup(clip["id"]) == clip
+    assert online.list_clips() == []
+
+
+def test_old_settings_gain_robin_source_without_losing_choices(monkeypatch, tmp_path):
+    from app import storage
+    monkeypatch.setattr(storage, "DATA", tmp_path)
+    storage.atomic_json(tmp_path / "settings.json",
+                        {"online_sources": {"apple": False, "nasa": True}})
+    cfg = storage.settings()
+    assert cfg["online_sources"] == {
+        "apple": False, "nasa": True, "robin": True,
+    }
+    storage.update_settings({"online_sources": {
+        "apple": False, "nasa": True, "robin": False,
+    }})
+    assert storage.settings()["online_sources"]["robin"] is False

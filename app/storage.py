@@ -39,7 +39,7 @@ DEFAULTS = {
     'local_videos_enabled': True,
     'auto_update_enabled': False,
     'auto_update_interval_minutes': 60,
-    'online_sources': {'apple': True, 'nasa': True},
+    'online_sources': {'apple': True, 'nasa': True, 'robin': True},
     'online_cache_enabled': True,
     'online_autodownload_enabled': True,
     'online_cache_gb': 12,
@@ -79,7 +79,7 @@ def read_json(path: Path, fallback: dict | None = None) -> dict:
 def settings() -> dict:
     with LOCK:
         result = {**DEFAULTS, **read_json(DATA / 'settings.json')}
-        # Upgrade old settings transparently without dropping Apple/NASA choices.
+        # Upgrade old settings transparently and enable new Robin source by default.
         sources = result.get('online_sources')
         if isinstance(sources, dict):
             result['online_sources'] = {
@@ -120,7 +120,7 @@ def update_settings(new: dict) -> dict:
         raise ValueError('Неизвестный часовой пояс') from None
     sources = result.get('online_sources')
     if (not isinstance(sources, dict)
-            or set(sources) != {'apple', 'nasa'}
+            or set(sources) != set(DEFAULTS['online_sources'])
             or any(not isinstance(value, bool) for value in sources.values())):
         raise ValueError('Неверные переключатели онлайн-источников')
     if not isinstance(result['online_cache_enabled'], bool):
