@@ -156,7 +156,7 @@ function renderOnlineSources(){
   const config=status.config.online_sources||{};
   for(const source of status.online_sources||[]){
     const msg=source.error||'Каталог готов';
-    const preparation=['apple','nasa','robin'].includes(source.id)?` · готово к показу: ${source.playable||0}`:'';
+    const preparation=' · готово к показу: '+(source.playable||0);
     const row=line(source.name,`${source.count} роликов${preparation} · ${msg}`);
     const label=document.createElement('label');
     const check=document.createElement('input');check.type='checkbox';
@@ -221,7 +221,15 @@ function playOnceButton(source,name){
 let libraryVideos=[];
 let librarySelectedSources=null;
 let libraryKnownSources=new Set();
-
+let libraryQuery='';
+let libraryVisibleLimit=80;
+const LIBRARY_BATCH=500;
+const LIBRARY_ALIASES={
+  'сибирь':['siberia','sibir'], 'байкал':['baikal'],
+  'новосибирск':['novosibirsk'], 'алтай':['altai','altay'],
+  'москва':['moscow'], 'нью-йорк':['new york','new-york'],
+  'париж':['paris'], 'япония':['japan'],
+};
 function activeLibrarySources(){
   const enabled=status?.config?.online_sources||{};
   const sources=(status?.online_sources||[])
@@ -231,7 +239,22 @@ function activeLibrarySources(){
     sources.push({id:'local',name:'Загруженные файлы'});
   return sources;
 }
-function renderLibrarySourceFilters(onlineVideos){
+function libraryMatches(item){
+  if(!libraryQuery.trim())return true;
+  const searchText=[
+    item.name,item.name_en,item.description,item.description_en,
+    item.subject,item.provider,item.credit,item.year,item.quality,
+  ].filter(Boolean).join(' ').toLocaleLowerCase();
+  return libraryQuery.toLocaleLowerCase().trim().split(/\s+/).every(term=>
+    [term,...(LIBRARY_ALIASES[term]||[])].some(alias=>searchText.includes(alias)));
+}
+function filteredLibrary(){
+  const online=libraryVideos.filter(v=>librarySelectedSources?.has(v.provider)&&libraryMatches(v));
+  const local=librarySelectedSources?.has('local')
+    ?(status?.videos||[]).filter(v=>libraryMatches(v)):[];
+  return {online,local};
+}
+function renderLibrarySourceFilters(){
   const sources=activeLibrarySources();
   const available=new Set(sources.map(source=>source.id));
   if(librarySelectedSources===null)librarySelectedSources=new Set(available);
@@ -248,13 +271,13 @@ function renderLibrarySourceFilters(onlineVideos){
   all.type='button';
   all.disabled=available.size===0||librarySelectedSources.size===available.size;
   all.addEventListener('click',()=>{
-    librarySelectedSources=new Set(available);
+    librarySelectedSources=new Set(available);libraryVisibleLimit=80;
     renderLibrary(libraryVideos);
   });
   root.append(all);
   for(const source of sources){
     const count=source.id==='local'?(status?.videos||[]).length:
-      onlineVideos.filter(video=>video.provider===source.id).length;
+      libraryVideos.filter(v=>v.provider===source.id).length;
     const label=document.createElement('label');
     const check=document.createElement('input');
     check.type='checkbox';
@@ -262,7 +285,7 @@ function renderLibrarySourceFilters(onlineVideos){
     check.addEventListener('change',()=>{
       if(check.checked)librarySelectedSources.add(source.id);
       else librarySelectedSources.delete(source.id);
-      renderLibrary(libraryVideos);
+      libraryVisibleLimit=80;renderLibrary(libraryVideos);
     });
     label.append(check,document.createTextNode(
       PiI18n.translate(source.name)+' ('+count+')'));
@@ -272,72 +295,100 @@ function renderLibrarySourceFilters(onlineVideos){
     available.size===0?'Нет включённых источников.':
       librarySelectedSources.size===0?'Выберите хотя бы один источник.':'');
 }
-
+async function updateLibrarySelection(ids,selected){
+  if(!ids.length)return;
+  const current=new Map(libraryVideos.map(v=>[v.id,v]));
+  const chosen=ids.filter(id=>{
+    const v=current.get(id);
+    return v&&v.selected!==selected&&(!selected||v.can_select);
+  });
+  if(!chosen.length)return;
+  const deleting=!selected?chosen.filter(id=>current.get(id).cached).length:0;
+  if(deleting&&!ask('Снять выбор и удалить скачанные файлы: '+deleting+'?'))return;
+  try{
+    for(let i=0;i<chosen.length;i+=LIBRARY_BATCH){
+      await api('/api/admin/online/library/selection',{
+        method:'POST',body:{ids:chosen.slice(i,i+LIBRARY_BATCH),selected}});
+    }
+    await loadLibrary();
+    toast(selected?'Ролики добавлены в очередь загрузки':'Выбор снят, загрузки отменены');
+  }catch(error){
+    toast(error.message);await loadLibrary();
+  }
+}
 function renderLibrary(onlineVideos){
   libraryVideos=onlineVideos;
-  renderLibrarySourceFilters(onlineVideos);
-  const filteredOnline=onlineVideos.filter(video=>librarySelectedSources.has(video.provider));
-  const filteredLocal=librarySelectedSources.has('local')?(status?.videos||[]):[];
-  $('onlineLibraryCard').hidden=!activeLibrarySources().some(source=>
-    source.id!=='local'&&librarySelectedSources.has(source.id));
+  renderLibrarySourceFilters();
+  const results=filteredLibrary();
+  const matching=results.online;
+  const localMatching=results.local;
+  const displayed=matching.slice(0,libraryVisibleLimit);
+  $('libraryShowMore').hidden=matching.length<=libraryVisibleLimit;
+  $('librarySelectVisible').disabled=!matching.some(v=>!v.selected&&v.can_select);
+  $('libraryUnselectVisible').disabled=!matching.some(v=>v.selected);
+  $('onlineLibraryCard').hidden=!activeLibrarySources().some(s=>
+    s.id!=='local'&&librarySelectedSources.has(s.id));
   $('localLibraryCard').hidden=!librarySelectedSources.has('local');
   const onlineRoot=$('onlineLibraryList'),localRoot=$('localLibraryList');
-  onlineRoot.replaceChildren();
-  localRoot.replaceChildren();
-  const ready=filteredOnline.filter(v=>v.cached);
-  const deleted=filteredOnline.filter(v=>!v.cached);
-  $('librarySummary').textContent=
-    `Готово: ${ready.length} · удалено, но сохранено в истории: ${deleted.length} · всего на диске: ${progressSize(ready.reduce((sum,v)=>sum+Number(v.bytes||0),0))}`;
-  for(const v of filteredOnline){
-    const provider=v.provider==='apple'?'Apple Aerial':
-      v.provider==='nasa'?'NASA':
-      v.provider==='robin'?'Robin Fourcade':v.provider;
-    const state=v.cached?'Готов к просмотру · '+progressSize(v.bytes):
-      'MP4 удалён · повторная загрузка заблокирована';
+  onlineRoot.replaceChildren();localRoot.replaceChildren();
+  const ready=matching.filter(v=>v.cached);
+  const chosen=matching.filter(v=>v.selected);
+  $('librarySummary').textContent='Найдено: '+matching.length+
+    ' · выбрано: '+chosen.length+' · готово: '+ready.length+
+    ' · на диске: '+progressSize(ready.reduce((sum,v)=>sum+Number(v.bytes||0),0));
+  for(const v of displayed){
     const english=PiI18n.language==='en';
     const name=english?(v.name_en||v.name):v.name;
     const description=english?(v.description_en||v.description):v.description;
-    const row=line(name,provider+' · '+state);
-    if(description)row.firstChild.append(textNode('p',description,'library-description'));
-    const controls=document.createElement('div');controls.className='inline-actions library-actions';
+    const source=activeLibrarySources().find(s=>s.id===v.provider)?.name||v.provider;
+    const state=v.cached?'Готов к просмотру · '+progressSize(v.bytes):
+      v.active?'Загружается / обрабатывается':
+      !v.selected?'Не выбран':
+      v.failed?'Ошибка, повторная попытка позже':
+      !v.can_select?'Нет в текущем каталоге':'В очереди загрузки';
+    const row=line(name,source+' · '+state+
+      (v.quality?' · '+v.quality:'')+(v.year?' · '+v.year:''));
+    row.classList.add('library-entry');
+    const info=row.firstChild;
+    info.classList.add('library-info');
+    const check=document.createElement('input');
+    check.className='library-pick';check.type='checkbox';
+    check.checked=!!v.selected;
+    check.disabled=!v.selected&&!v.can_select;
+    check.title='Выбрать для автоматической загрузки и показа';
+    check.addEventListener('change',()=>{
+      const requested=check.checked;
+      check.checked=!requested;
+      updateLibrarySelection([v.id],requested).catch(error=>toast(error.message));
+    });
+    row.insertBefore(check,info);
+    if(description)info.append(textNode('p',description,'library-description'));
+    if(v.subject)info.append(textNode('small',v.subject));
+    if(/^https:\/\/archive\.org\/services\/img\/[A-Za-z0-9_.-]+$/.test(v.thumbnail||'')){
+      const img=document.createElement('img');
+      img.className='library-thumb';img.src=v.thumbnail;
+      img.alt=name;img.loading='lazy';row.insertBefore(img,info);
+    }
+    const controls=document.createElement('div');
+    controls.className='inline-actions library-actions';
     if(v.cached){
       const preview=textNode('button','Просмотр');
       preview.addEventListener('click',()=>openLibraryPreview(
         name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview'));
-      const remove=textNode('button','Удалить файл');
-      remove.addEventListener('click',async()=>{
-        if(!ask('Удалить готовый MP4? Запрет повторной загрузки останется.'))return;
-        remove.disabled=true;
-        try{
-          await api('/api/admin/online/library/'+encodeURIComponent(v.id),{method:'DELETE'});
-          toast('Файл удалён. Повторная загрузка по-прежнему заблокирована.');
-          await load();await loadLibrary();
-        }catch(e){toast(e.message);remove.disabled=false}
-      });
-      controls.append(preview,playOnceButton('online',v.id),remove);
-    }else{
-      if(v.can_redownload){
-        const unlock=textNode('button','Разрешить повторную загрузку');
-        unlock.addEventListener('click',async()=>{
-          if(!ask('Снять блокировку и разрешить снова скачать этот ролик?'))return;
-          unlock.disabled=true;
-          try{
-            await api('/api/admin/online/library/'+encodeURIComponent(v.id)+'/redownload',{method:'POST'});
-            toast('Блокировка снята. Загрузка начнётся по общей очереди.');
-            await load();await loadLibrary();
-          }catch(e){toast(e.message);unlock.disabled=false}
-        });
-        controls.append(unlock);
-      }else{
-        controls.append(textNode('small','Ролика уже нет в текущем каталоге'));
-      }
+      controls.append(preview,playOnceButton('online',v.id));
+    }
+    if(v.page&&/^https:\/\/(archive\.org|github\.com|www\.apple\.com|images\.nasa\.gov)\//.test(v.page)){
+      const link=textNode('a','Оригинал');
+      link.href=v.page;link.target='_blank';link.rel='noopener noreferrer';
+      controls.append(link);
     }
     row.append(controls);onlineRoot.append(row);
   }
-  if(!filteredOnline.length)onlineRoot.append(textNode('p','Пока нет скачанных роликов.','hint'));
-  for(const v of filteredLocal){
+  if(!matching.length)onlineRoot.append(textNode('p','Поиск не дал результатов.','hint'));
+  for(const v of localMatching){
     const row=line(v.name,'Локальная загрузка · '+progressSize(v.bytes));
-    const controls=document.createElement('div');controls.className='inline-actions library-actions';
+    const controls=document.createElement('div');
+    controls.className='inline-actions library-actions';
     const preview=textNode('button','Просмотр');
     preview.addEventListener('click',()=>openLibraryPreview(v.name,v.url));
     const remove=textNode('button','Удалить файл');
@@ -349,10 +400,12 @@ function renderLibrary(onlineVideos){
         toast('Файл удалён');await load();await loadLibrary();
       }catch(e){toast(e.message);remove.disabled=false}
     });
-    controls.append(preview,playOnceButton('local',v.name),remove);row.append(controls);localRoot.append(row);
+    controls.append(preview,playOnceButton('local',v.name),remove);
+    row.append(controls);localRoot.append(row);
   }
-  if(!filteredLocal.length)localRoot.append(textNode('p','Своих готовых файлов пока нет.','hint'));
+  if(!localMatching.length)localRoot.append(textNode('p','Своих готовых файлов по запросу нет.','hint'));
 }
+
 async function loadPlaybackStatus(){
   try{
     const data=await api('/api/admin/display/play-once/status');
@@ -393,6 +446,17 @@ $('externalVideoForm').addEventListener('submit',async event=>{
   finally{setBusy(form,false)}
 });
 $('libraryRefresh').addEventListener('click',async()=>{await load();await loadLibrary();await loadPlaybackStatus()});
+$('librarySearch').addEventListener('input',e=>{
+  libraryQuery=e.target.value;libraryVisibleLimit=80;
+  if(status)renderLibrary(libraryVideos);
+});
+$('libraryShowMore').addEventListener('click',()=>{
+  libraryVisibleLimit+=80;renderLibrary(libraryVideos);
+});
+$('librarySelectVisible').addEventListener('click',()=>updateLibrarySelection(
+  filteredLibrary().online.filter(v=>!v.selected&&v.can_select).map(v=>v.id),true));
+$('libraryUnselectVisible').addEventListener('click',()=>updateLibrarySelection(
+  filteredLibrary().online.filter(v=>v.selected).map(v=>v.id),false));
 $('stopDisplayVideo').addEventListener('click',async e=>{
   const button=e.currentTarget;
   button.disabled=true;

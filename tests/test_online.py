@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app import online
+from app import online, online_library
 from app.storage import update_settings
 
 
@@ -131,7 +131,8 @@ def test_cache_maximum_tracks_disk_size(monkeypatch, tmp_path):
 
 
 def test_source_settings_validation():
-    valid = {"apple": True, "nasa": True, "robin": True}
+    from app.storage import DEFAULTS
+    valid = dict(DEFAULTS["online_sources"])
     update_settings({"online_sources": valid, "online_cache_gb": 12})
     with pytest.raises(ValueError):
         update_settings({"online_sources": {"apple": True}})
@@ -312,6 +313,7 @@ def test_apple_mov_cache_forces_transcode_and_removes_source(monkeypatch, tmp_pa
         "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
         "Ocean", "Apple", "https://www.apple.com/"
     )
+    monkeypatch.setattr(online_library, "is_selected", lambda ident: ident == clip["id"])
     assert online.DOWNLOAD_SLOT.acquire(blocking=False)
     online._cache_worker(clip)
     path = tmp_path / (clip["id"] + ".mp4")
@@ -370,6 +372,7 @@ def test_mov_not_advertised_until_real_mp4_cache_ready(monkeypatch, tmp_path):
         bytes.fromhex("000000186674797069736f6d") + b"0" * 1500
     )
     (online.CACHE_FOLDER / (clip["id"] + ".ready")).write_text(online.CACHE_PROFILE)
+    online_library.set_selected([clip["id"]], True)
     clips = online.list_clips()
     assert len(clips) == 1 and clips[0]["cached"] is True
     assert online.source_status()[0]["playable"] == 1
@@ -391,6 +394,7 @@ def test_only_bounded_mov_prefetch_one_at_a_time(monkeypatch, tmp_path):
         "online_cache_enabled": True,
     })
     monkeypatch.setattr(online.shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    online_library.set_selected([clip["id"] for clip in clips], True)
     calls = []
     monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]) or True)
     online.warm_cache()
@@ -411,12 +415,18 @@ def test_processed_history_prevents_repeated_download_after_eviction(monkeypatch
         "online_sources": {"apple": True, "nasa": False},
     })
     monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "SCHEDULER_FILE", tmp_path / "scheduler.json")
     online.atomic_json(online.CATALOG_FILE, {
         "sources": {"apple": {"items": [clip]}}
     })
     monkeypatch.setattr(online.shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    calls = []
+    monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]) or True)
     online.warm_cache()
-    assert clip["id"] not in online.ACTIVE
+    assert calls == []   # History does not grant automatic download anymore.
+    online_library.set_selected([clip["id"]], True)
+    online.warm_cache()
+    assert calls == [clip["id"]]  # Selecting again can redownload despite history.
 
 
 def test_cache_limit_pauses_without_eviction_then_resumes(monkeypatch, tmp_path):
@@ -459,6 +469,7 @@ def test_cache_limit_pauses_without_eviction_then_resumes(monkeypatch, tmp_path)
 
     config["online_cache_gb"] = 2
     assert not online.cache_status()["paused"]
+    online_library.set_selected([new["id"]], True)
     online.warm_cache()
     assert calls == [new["id"]]
     assert ready.exists()
@@ -643,6 +654,8 @@ def test_robin_clips_appear_only_after_normalization(monkeypatch, tmp_path):
     monkeypatch.setattr(online, "settings", lambda: {
         "online_sources": {"robin": True},
     })
+    assert online.lookup(clip["id"]) is None  # Suggestions are not playable.
+    online_library.set_selected([clip["id"]], True)
     assert online.lookup(clip["id"]) == clip
     assert online.list_clips() == []
 
@@ -655,9 +668,10 @@ def test_old_settings_gain_robin_source_without_losing_choices(monkeypatch, tmp_
     cfg = storage.settings()
     assert cfg["online_sources"] == {
         "apple": False, "nasa": True, "robin": True,
+        **{name: False for name in online.ARCHIVE_THEMES},
     }
     storage.update_settings({"online_sources": {
-        "apple": False, "nasa": True, "robin": False,
+        **cfg["online_sources"], "robin": False,
     }})
     assert storage.settings()["online_sources"]["robin"] is False
 
@@ -680,7 +694,7 @@ def test_all_sources_get_round_robin_turns_including_nasa_after_two(monkeypatch,
     clips = {
         src: [online._clip(src, str(i), urls[src] + str(i) + ".mp4",
                            src, src, "https://example.com") for i in range(4)]
-        for src in online.SOURCE_ORDER
+        for src in ("robin", "apple", "nasa")
     }
     online.atomic_json(online.CATALOG_FILE, {
         "sources": {src: {"items": items} for src, items in clips.items()}
@@ -690,11 +704,15 @@ def test_all_sources_get_round_robin_turns_including_nasa_after_two(monkeypatch,
     done = set()
     monkeypatch.setattr(online, "cached_file", lambda ident: tmp_path if ident in cached else None)
     monkeypatch.setattr(online, "_processed_ids", lambda: set(done))
+    monkeypatch.setattr(online_library, "selected_ids", lambda: {
+        clip["id"] for items in clips.values() for clip in items
+    })
     scheduled = []
 
     def schedule(entry):
         scheduled.append(entry)
         done.add(entry["id"])
+        cached.add(entry["id"])  # Simulate completed work, not just old processed history.
         return True
 
     monkeypatch.setattr(online, "try_cache", schedule)
@@ -706,7 +724,7 @@ def test_all_sources_get_round_robin_turns_including_nasa_after_two(monkeypatch,
     assert [item["id"] for item in scheduled if item["provider"] == "nasa"] == [
         clips["nasa"][2]["id"], clips["nasa"][3]["id"]
     ]
-    assert online.read_json(online.SCHEDULER_FILE)["next"] == "robin"
+    assert online.read_json(online.SCHEDULER_FILE)["next"] == "ia_nature"
 
 
 def test_round_robin_cursor_survives_a_restart_and_skips_disabled(monkeypatch, tmp_path):
@@ -730,6 +748,9 @@ def test_round_robin_cursor_survives_a_restart_and_skips_disabled(monkeypatch, t
     })
     done = set()
     monkeypatch.setattr(online, "_processed_ids", lambda: set(done))
+    monkeypatch.setattr(online_library, "selected_ids", lambda: {
+        item["id"] for item in clips
+    })
     monkeypatch.setattr(online, "cached_file", lambda _: None)
     calls = []
 
@@ -761,6 +782,7 @@ def test_rejected_download_does_not_advance_round_robin(monkeypatch, tmp_path):
     online.atomic_json(online.CATALOG_FILE,
                        {"sources": {"robin": {"items": [clip]}}})
     monkeypatch.setattr(online, "_processed_ids", lambda: set())
+    monkeypatch.setattr(online_library, "selected_ids", lambda: {clip["id"]})
     monkeypatch.setattr(online, "cached_file", lambda _: None)
     monkeypatch.setattr(online, "try_cache", lambda entry: False)  # Busy slot.
     online.warm_cache()
@@ -768,3 +790,85 @@ def test_rejected_download_does_not_advance_round_robin(monkeypatch, tmp_path):
     monkeypatch.setattr(online, "try_cache", lambda entry: True)
     online.warm_cache()
     assert online.read_json(online.SCHEDULER_FILE)["next"] == "apple"
+
+
+def test_internet_archive_url_hosts_reject_ssrf_and_other_archive_endpoints():
+    src = "ia_history"
+    assert online.allowed_video_url(
+        "https://archive.org/download/historic-city/movie.mp4", src)
+    assert online.allowed_video_url(
+        "https://ia800304.us.archive.org/download/historic-city/movie.mp4", src)
+    assert online.allowed_video_url(
+        "https://ia800304.us.archive.org/14/items/historic-city/movie.mp4", src)
+    for url in [
+        "http://archive.org/download/historic-city/video.mp4",
+        "https://archive.org.evil.test/download/clip/v.mp4",
+        "https://127.0.0.1/download/clip/v.mp4",
+        "https://archive.org/metadata/historic-city",
+        "https://archive.org/download/clip/../etc/passwd",
+        "https://archive.org/download/clip/%2e%2e/passwd",
+        "https://evil.us.archive.org/download/clip/v.mp4",
+    ]:
+        assert not online.allowed_video_url(url, src), url
+
+
+def test_internet_archive_candidates_require_explicit_license_widescreen_hd():
+    doc = {"identifier": "historical-city-1960",
+           "title": "Old New York", "year": "1960"}
+    good = {
+        "metadata": {
+            "title": "Streets of New York", "creator": "Archives",
+            "description": "Wide city landscape", "year": "1960",
+            "licenseurl": "https://creativecommons.org/licenses/by/4.0/"
+        },
+        "files": [
+            {"name": "old_640x480.mp4", "size": "2000000"},
+            {"name": "hd_1920x1080.mp4", "size": "3000000", "length": "250"},
+            {"name": "fourk_3840x2160.mp4", "size": "5000000"},
+        ],
+    }
+    clip = online._archive_candidate("ia_history", doc, good)
+    assert clip is not None
+    assert clip["remote_url"].endswith("/hd_1920x1080.mp4")
+    assert clip["quality"] == "1920×1080"
+    assert clip["year"] == "1960"
+    assert clip["duration"] == 250
+    assert clip["license"].endswith("/by/4.0/")
+    assert clip["provider"] == "ia_history"
+
+    from copy import deepcopy
+    for change in [
+        {"licenseurl": "https://creativecommons.org/licenses/by-nc/4.0/"},
+        {"licenseurl": "https://creativecommons.org/licenses/by-nd/4.0/"},
+        {"licenseurl": ""},
+    ]:
+        payload = deepcopy(good)
+        payload["metadata"].update(change)
+        assert online._archive_candidate("ia_history", doc, payload) is None
+    for filename in ["old_640x480.mp4", "vertical_1080x1920.mp4",
+                     "too_small_1280x720.mp4", "no_resolution.mp4",
+                     "square_1080x1080.mp4"]:
+        payload = deepcopy(good)
+        payload["files"] = [{"name": filename, "size": "3000000"}]
+        assert online._archive_candidate("ia_history", doc, payload) is None
+
+
+def test_internet_archive_search_uses_bounded_metadata_only(monkeypatch):
+    fetched = []
+    identifier = "historic-city"
+    def fake(url, **kwargs):
+        fetched.append(url)
+        if "/advancedsearch.php?" in url:
+            return {"response": {"docs": [{"identifier": identifier,
+                                            "title": "City 1960"}]}}
+        assert url == "https://archive.org/metadata/" + identifier
+        return {"metadata": {
+            "licenseurl": "https://creativecommons.org/publicdomain/zero/1.0/",
+            "description": "Historic city panorama"},
+            "files": [{"name": "1960_1920x1080.mp4", "size": "2000000"}]}
+    monkeypatch.setattr(online, "_http_json", fake)
+    clips = online._archive_theme("ia_history")
+    assert len(clips) == 1
+    assert clips[0]["name"] == "City 1960"
+    assert len(fetched) == 2
+    assert "mediatype%3Amovies" in fetched[0]
