@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from app import online, online_library
+from app.online import try_cache as real_try_cache
 from app.storage import update_settings
 
 
@@ -979,7 +980,7 @@ def test_old_processed_history_cannot_block_selected_redownload(monkeypatch):
         called.set()
 
     monkeypatch.setattr(online, "_cache_worker", worker)
-    assert online.try_cache(clip) is True
+    assert real_try_cache(clip) is True
     assert called.wait(timeout=2)
     assert slot.acquire(blocking=False)
     slot.release()
