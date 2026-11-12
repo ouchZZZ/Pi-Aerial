@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from app import online, online_library
+from app.online import try_cache as real_try_cache
 from app.storage import update_settings
 
 
@@ -846,11 +847,19 @@ def test_internet_archive_candidates_require_explicit_license_widescreen_hd():
         payload["metadata"].update(change)
         assert online._archive_candidate("ia_history", doc, payload) is None
     for filename in ["old_640x480.mp4", "vertical_1080x1920.mp4",
-                     "too_small_1280x720.mp4", "no_resolution.mp4",
-                     "square_1080x1080.mp4"]:
+                     "too_small_1280x720.mp4", "square_1080x1080.mp4",
+                     "known_720p.mp4", "known_480p.mp4"]:
         payload = deepcopy(good)
         payload["files"] = [{"name": filename, "size": "3000000"}]
         assert online._archive_candidate("ia_history", doc, payload) is None
+    # Missing pixel dimensions are common: offer a proposal without claiming
+    # it is HD. The actual file MUST pass ffprobe before being kept.
+    payload = deepcopy(good)
+    payload["files"] = [{"name": "mystery_movie.mp4", "size": "3000000"}]
+    proposed = online._archive_candidate("ia_history", doc, payload)
+    assert proposed is not None
+    assert proposed["quality"] == "Неизвестно"
+    assert proposed["quality_verified"] is False
 
 
 def test_internet_archive_search_uses_bounded_metadata_only(monkeypatch):
@@ -870,5 +879,131 @@ def test_internet_archive_search_uses_bounded_metadata_only(monkeypatch):
     clips = online._archive_theme("ia_history")
     assert len(clips) == 1
     assert clips[0]["name"] == "City 1960"
-    assert len(fetched) == 2
-    assert "mediatype%3Amovies" in fetched[0]
+    assert len(fetched) == len(online.ARCHIVE_SEARCHES["ia_history"]) + 1
+    assert all("mediatype%3Amovies" in url for url in fetched[:-1])
+    assert online.ARCHIVE_SCAN_REPORT["ia_history"]["scanned"] == 1
+    assert online.ARCHIVE_SCAN_REPORT["ia_history"]["accepted"] == 1
+
+
+
+def test_archive_search_rotates_pages_and_uses_independent_searches(monkeypatch, tmp_path):
+    import urllib.parse
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    online.atomic_json(online.CATALOG_FILE, {
+        "sources": {"ia_nature": {"scan_cursor": 1}}
+    })
+    searches = []
+    def fake(url, **kwargs):
+        if "/advancedsearch.php?" in url:
+            params = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            searches.append(params)
+            return {"response": {"docs": []}}
+        raise AssertionError("No metadata requests for empty search pages")
+    monkeypatch.setattr(online, "_http_json", fake)
+    assert online._archive_theme("ia_nature") == []
+    assert len(searches) == len(online.ARCHIVE_SEARCHES["ia_nature"])
+    assert {query["page"][0] for query in searches} == {"2"}
+    assert all(query["rows"] == ["35"] for query in searches)
+    assert len({query["q"][0] for query in searches}) == len(searches)
+    assert online.ARCHIVE_SCAN_REPORT["ia_nature"]["next_cursor"] == 2
+
+
+def test_archive_worker_rejects_real_sd_video_even_if_catalog_claimed_hd(monkeypatch, tmp_path):
+    import io
+    import threading
+    from types import SimpleNamespace
+    from app import video_conversion
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(online, "CACHE_FOLDER", cache)
+    monkeypatch.setattr(online, "PROCESSED_FILE", tmp_path / "processed.json")
+    monkeypatch.setattr(online, "CACHE_FAILED_UNTIL", {})
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_cache_enabled": True, "online_autodownload_enabled": True,
+        "online_cache_gb": 12})
+    monkeypatch.setattr(online.shutil, "disk_usage",
+                        lambda _: SimpleNamespace(total=128*1024**3,
+                                                  free=80*1024**3))
+    monkeypatch.setattr(online.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+    payload = b"\x00\x00\x00\x18ftypisom" + b"A" * 2048
+    class FakeResponse(io.BytesIO):
+        def __init__(self):
+            super().__init__(payload)
+            self.headers = {"Content-Length": str(len(payload))}
+    class FakeOpener:
+        def open(self, request, timeout):
+            return FakeResponse()
+    monkeypatch.setattr(online.urllib.request, "build_opener",
+                        lambda *args: FakeOpener())
+    monkeypatch.setattr(video_conversion, "probe_video",
+                        lambda _: {"width": 1280, "height": 720})
+    monkeypatch.setattr(online, "normalize_video",
+                        lambda *args, **kwargs: pytest.fail(
+                            "SD footage was admitted to converter"))
+    clip = online._clip(
+        "ia_nature", "sample-clip",
+        "https://archive.org/download/sample-clip/video.mp4",
+        "Nature", "Uploader", "https://archive.org/details/sample-clip")
+    slot = threading.BoundedSemaphore(1)
+    assert slot.acquire(blocking=False)
+    online._cache_worker(clip, slot)
+    assert slot.acquire(blocking=False)
+    assert not (cache / (clip["id"] + ".mp4")).exists()
+    assert not (cache / (clip["id"] + ".ready")).exists()
+    assert clip["id"] in online.CACHE_FAILED_UNTIL
+
+
+
+def test_old_processed_history_cannot_block_selected_redownload(monkeypatch):
+    import threading
+    clip = online._clip("apple", "used", "https://sylvan.apple.com/old.mov",
+                        "Old", "Apple", "https://www.apple.com/")
+    ident = clip["id"]
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_cache_enabled": True, "online_autodownload_enabled": True,
+    })
+    monkeypatch.setattr(online, "cache_status", lambda: {"paused": False})
+    monkeypatch.setattr(online.update_control, "paused", lambda: False)
+    monkeypatch.setattr(online_library, "is_selected", lambda value: value == ident)
+    monkeypatch.setattr(online, "cached_file", lambda _: None)
+    monkeypatch.setattr(online, "_processed_ids", lambda: {ident})
+    slot = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(online, "DOWNLOAD_SLOT", slot)
+    called = threading.Event()
+
+    def worker(entry, borrowed, stop):
+        with online.LOCK:
+            online.ACTIVE.discard(entry["id"])
+            online.CACHE_WORKERS.pop(threading.current_thread(), None)
+            online.CANCEL_EVENTS.pop(entry["id"], None)
+        borrowed.release()
+        called.set()
+
+    monkeypatch.setattr(online, "_cache_worker", worker)
+    assert real_try_cache(clip) is True
+    assert called.wait(timeout=2)
+    assert slot.acquire(blocking=False)
+    slot.release()
+
+
+def test_download_failures_are_accurate_and_do_not_expose_addresses():
+    import urllib.error
+    for status, expected in [
+        (403, "HTTP 403"), (404, "HTTP 404"),
+        (429, "HTTP 429"), (503, "HTTP 503")
+    ]:
+        exc = urllib.error.HTTPError(
+            "https://archive.org/download/test/private.mp4",
+            status, "Forbidden", {}, None
+        )
+        detail = online._download_failure_message(exc)
+        assert expected in detail
+        assert "https://" not in detail
+    assert "ожидания" in online._download_failure_message(
+        urllib.error.URLError("timed out"))
+    assert "HTTPS" in online._download_failure_message(
+        urllib.error.URLError("SSL certificate verify failed"))
+    exc = ValueError("Unexpected https://archive.org/download/signed?token=secret next")
+    text = online._download_failure_message(exc)
+    assert "secret" not in text
+    assert "адрес скрыт" in text

@@ -73,7 +73,8 @@ function renderVideoProgress(data){
   }
   const done=Array.isArray(data.recent)?data.recent:[];
   recent.textContent=done.length?
-    'Недавние задания: '+done.map(j=>(j.stage==='ready'?'Готово':'Ошибка')+' · '+j.name).join(' | '):'';
+    'Недавние задания: '+done.map(j=>(j.stage==='ready'?'Готово':'Ошибка')+
+      ' · '+j.name+(j.stage==='failed'&&j.message?' · '+j.message:'')).join(' | '):'';
 }
 let videoProgressBusy=false;
 async function refreshVideoProgress(){
@@ -157,7 +158,15 @@ function renderOnlineSources(){
   for(const source of status.online_sources||[]){
     const msg=source.error||'Каталог готов';
     const preparation=' · готово к показу: '+(source.playable||0);
-    const row=line(source.name,`${source.count} роликов${preparation} · ${msg}`);
+    const scan=source.scan||{};
+    const checked=source.id.startsWith('ia_')&&Number.isInteger(scan.scanned)
+      ?' · проверено: '+scan.scanned+
+        ' · найдено за проход: '+scan.accepted+
+        ' · качество не указано: '+scan.unverified:'';
+    const note=source.id.startsWith('ia_')&&!source.count&&!source.error
+      ?'Подходящих кандидатов пока нет':'';
+    const row=line(source.name,source.count+' роликов'+preparation+
+      checked+' · '+(note||msg));
     const label=document.createElement('label');
     const check=document.createElement('input');check.type='checkbox';
     check.checked=!!config[source.id];check.title='Включить источник '+source.name;
@@ -344,7 +353,7 @@ function renderLibrary(onlineVideos){
     const state=v.cached?'Готов к просмотру · '+progressSize(v.bytes):
       v.active?'Загружается / обрабатывается':
       !v.selected?'Не выбран':
-      v.failed?'Ошибка, повторная попытка позже':
+      v.failed?(v.error||'Ошибка, повторная попытка позже'):
       !v.can_select?'Нет в текущем каталоге':'В очереди загрузки';
     const row=line(name,source+' · '+state+
       (v.quality?' · '+v.quality:'')+(v.year?' · '+v.year:''));
@@ -376,6 +385,19 @@ function renderLibrary(onlineVideos){
       preview.addEventListener('click',()=>openLibraryPreview(
         name,'/api/admin/online/library/'+encodeURIComponent(v.id)+'/preview'));
       controls.append(preview,playOnceButton('online',v.id));
+    }
+    if(v.failed&&v.selected&&!v.cached&&!v.active){
+      const retry=textNode('button','Повторить загрузку');
+      retry.addEventListener('click',async()=>{
+        retry.disabled=true;
+        try{
+          await api('/api/admin/online/library/'+encodeURIComponent(v.id)+'/retry',
+            {method:'POST'});
+          toast('Ролик снова в очереди');
+          await loadLibrary();
+        }catch(error){toast(error.message);retry.disabled=false}
+      });
+      controls.append(retry);
     }
     if(v.page&&/^https:\/\/(archive\.org|github\.com|www\.apple\.com|images\.nasa\.gov)\//.test(v.page)){
       const link=textNode('a','Оригинал');

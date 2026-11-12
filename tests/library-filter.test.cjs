@@ -163,6 +163,12 @@ test('empty selection and no enabled source show guidance without erasing files'
   assert.equal(ui.videos.length,4);
 });
 
+test('failed selected video keeps a visible retry action',()=>{
+  assert.match(admin,/v\.failed&&v\.selected&&!v\.cached&&!v\.active/);
+  assert.match(admin,/online\/library\/.*\/retry/);
+  assert.match(admin,/v\.error\|\|'Ошибка, повторная попытка позже'/);
+});
+
 test('source-filter labels have English translations',()=>{
   const i18n=fs.readFileSync(path.join(root,'web/i18n.js'),'utf8');
   for(const ru of ['Фильтр по источникам','Все источники','Нет включённых источников.','Выберите хотя бы один источник.']){

@@ -203,3 +203,41 @@ def test_public_release_has_attribution_but_no_download_button():
     screen = (web / 'display.html').read_text()
     assert 'https://open-meteo.com/' in screen
     assert 'https://creativecommons.org/licenses/by/4.0/' in screen
+
+
+
+def test_retry_selected_failed_video_is_authenticated_and_clears_cooldown(
+        library, monkeypatch):
+    import time
+    from fastapi.testclient import TestClient
+    from app import main, auth
+
+    clip, output = library
+    ident = clip["id"]
+    monkeypatch.setattr(online, "warm_cache", lambda: None)
+    monkeypatch.setattr(online, "CACHE_FAILED_UNTIL", {})
+    monkeypatch.setattr(online, "CACHE_FAILED_REASONS", {})
+    online_library.set_selected([ident], False)
+    assert not output.exists()
+
+    auth.set_password("sample-retry-password")
+    client = TestClient(main.app)
+    uri = "/api/admin/online/library/" + ident + "/retry"
+    assert client.post(uri).status_code == 401
+    token = client.post("/api/auth/login",
+                        json={"password": "sample-retry-password"}).json()["csrf"]
+    assert client.post(uri).status_code == 403
+    assert client.post(uri, headers={"x-csrf-token": token}).status_code == 409
+
+    online_library.set_selected([ident], True)
+    online.CACHE_FAILED_UNTIL[ident] = time.time() + 3600
+    online.CACHE_FAILED_REASONS[ident] = "HTTP 503: сервер временно недоступен"
+    item = next(i for i in online_library.list_videos() if i["id"] == ident)
+    assert item["failed"] is True
+    assert "HTTP 503" in item["error"]
+    assert client.post(uri, headers={"x-csrf-token": token}).status_code == 200
+    assert ident not in online.CACHE_FAILED_UNTIL
+    assert ident not in online.CACHE_FAILED_REASONS
+    assert client.post(uri, headers={"x-csrf-token": token}).status_code == 200
+    assert client.post("/api/admin/online/library/bad-id/retry",
+                       headers={"x-csrf-token": token}).status_code == 409
