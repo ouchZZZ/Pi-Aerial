@@ -1132,3 +1132,58 @@ def test_background_and_manual_catalog_checks_are_serialized(monkeypatch, tmp_pa
         second.join(timeout=3)
     assert not first.is_alive() and not second.is_alive()
     assert requests == ["apple"]  # Recheck reads the first scan's timestamp.
+
+
+
+def test_archive_metadata_filters_irrelevant_and_upscaled_content():
+    good = {"licenseurl": "https://creativecommons.org/licenses/by/4.0/",
+            "title": "Mountain Fog Time Lapse",
+            "description": "Aerial landscape in the morning"}
+    def candidate(provider, title, description="", length="140"):
+        doc = {"identifier": "sample-metadata", "title": title}
+        data = {"metadata": {**good, "title": title,
+                             "description": description},
+                "files": [{"name": "clip_1920x1080.mp4", "size": "4000000",
+                           "length": length}]}
+        return online._archive_candidate(provider, doc, data)
+    assert candidate("ia_nature", "Mountain Fog", "Aerial misty landscape")
+    assert candidate("ia_timelapse", "Starry Sky Time Lapse",
+                     "Night sky timelapse")
+    assert candidate("ia_space", "Earth from ISS",
+                     "NASA orbital Earth imagery")
+    assert candidate("ia_history", "Old New York",
+                     "Historic city streets")
+    assert candidate("ia_cities", "Paris skyline", "Drone aerial view")
+
+    for provider, title, description in [
+        ("ia_nature", "Nature Cat - Full Series", "Nature videos"),
+        ("ia_space", "Hackers on Planet Earth", "Conference video"),
+        ("ia_space", "Dr. Moze - Yoga for Earth Girls", "Earth yoga class"),
+        ("ia_space", "Clutch Cargo cartoons collection", "Space animation"),
+        ("ia_history", "Sneakers on Power Lines", "Clothing"),
+        ("ia_nature", "Old Nature Show", "Upscaled from 480p to 1080p"),
+        ("ia_cities", "Gameplay: City Skyline", "Recorded video game"),
+    ]:
+        assert candidate(provider, title, description) is None, title
+
+
+def test_archive_minimum_duration_is_sixty_seconds_for_known_metadata():
+    doc = {"identifier": "river-scenery", "title": "Mountain river scenery"}
+    def payload(runtime=None, length=None):
+        metadata = {
+            "title": "Mountain river scenery",
+            "licenseurl": "https://creativecommons.org/licenses/by/4.0/",
+        }
+        if runtime is not None:
+            metadata["runtime"] = runtime
+        file = {"name": "river_1920x1080.mp4", "size": "4000000"}
+        if length is not None:
+            file["length"] = length
+        return {"metadata": metadata, "files": [file]}
+    assert online._archive_candidate("ia_nature", doc, payload(length="59")) is None
+    assert online._archive_candidate("ia_nature", doc, payload(length="60")) is not None
+    assert online._archive_candidate("ia_nature", doc, payload(runtime="00:00:07")) is None
+    assert online._archive_candidate("ia_nature", doc, payload(runtime="00:02:40"))
+    unknown = online._archive_candidate("ia_nature", doc, payload())
+    assert unknown is not None and unknown["duration"] is None
+    assert online._archive_duration_seconds("00:01:30") == 90
