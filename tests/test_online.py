@@ -372,6 +372,7 @@ def test_mov_not_advertised_until_real_mp4_cache_ready(monkeypatch, tmp_path):
         bytes.fromhex("000000186674797069736f6d") + b"0" * 1500
     )
     (online.CACHE_FOLDER / (clip["id"] + ".ready")).write_text(online.CACHE_PROFILE)
+    online_library.set_selected([clip["id"]], True)
     clips = online.list_clips()
     assert len(clips) == 1 and clips[0]["cached"] is True
     assert online.source_status()[0]["playable"] == 1
@@ -788,3 +789,83 @@ def test_rejected_download_does_not_advance_round_robin(monkeypatch, tmp_path):
     monkeypatch.setattr(online, "try_cache", lambda entry: True)
     online.warm_cache()
     assert online.read_json(online.SCHEDULER_FILE)["next"] == "apple"
+
+
+def test_internet_archive_url_hosts_reject_ssrf_and_other_archive_endpoints():
+    src = "ia_history"
+    assert online.allowed_video_url(
+        "https://archive.org/download/historic-city/movie.mp4", src)
+    assert online.allowed_video_url(
+        "https://ia800304.us.archive.org/download/historic-city/movie.mp4", src)
+    for url in [
+        "http://archive.org/download/historic-city/video.mp4",
+        "https://archive.org.evil.test/download/clip/v.mp4",
+        "https://127.0.0.1/download/clip/v.mp4",
+        "https://archive.org/metadata/historic-city",
+        "https://archive.org/download/clip/../etc/passwd",
+        "https://archive.org/download/clip/%2e%2e/passwd",
+        "https://evil.us.archive.org/download/clip/v.mp4",
+    ]:
+        assert not online.allowed_video_url(url, src), url
+
+
+def test_internet_archive_candidates_require_explicit_license_widescreen_hd():
+    doc = {"identifier": "historical-city-1960",
+           "title": "Old New York", "year": "1960"}
+    good = {
+        "metadata": {
+            "title": "Streets of New York", "creator": "Archives",
+            "description": "Wide city landscape", "year": "1960",
+            "licenseurl": "https://creativecommons.org/licenses/by/4.0/"
+        },
+        "files": [
+            {"name": "old_640x480.mp4", "size": "2000000"},
+            {"name": "hd_1920x1080.mp4", "size": "3000000", "length": "250"},
+            {"name": "fourk_3840x2160.mp4", "size": "5000000"},
+        ],
+    }
+    clip = online._archive_candidate("ia_history", doc, good)
+    assert clip is not None
+    assert clip["remote_url"].endswith("/hd_1920x1080.mp4")
+    assert clip["quality"] == "1920×1080"
+    assert clip["year"] == "1960"
+    assert clip["duration"] == 250
+    assert clip["license"].endswith("/by/4.0/")
+    assert clip["provider"] == "ia_history"
+
+    from copy import deepcopy
+    for change in [
+        {"licenseurl": "https://creativecommons.org/licenses/by-nc/4.0/"},
+        {"licenseurl": "https://creativecommons.org/licenses/by-nd/4.0/"},
+        {"licenseurl": ""},
+    ]:
+        payload = deepcopy(good)
+        payload["metadata"].update(change)
+        assert online._archive_candidate("ia_history", doc, payload) is None
+    for filename in ["old_640x480.mp4", "vertical_1080x1920.mp4",
+                     "too_small_1280x720.mp4", "no_resolution.mp4",
+                     "square_1080x1080.mp4"]:
+        payload = deepcopy(good)
+        payload["files"] = [{"name": filename, "size": "3000000"}]
+        assert online._archive_candidate("ia_history", doc, payload) is None
+
+
+def test_internet_archive_search_uses_bounded_metadata_only(monkeypatch):
+    fetched = []
+    identifier = "historic-city"
+    def fake(url, **kwargs):
+        fetched.append(url)
+        if "/advancedsearch.php?" in url:
+            return {"response": {"docs": [{"identifier": identifier,
+                                            "title": "City 1960"}]}}
+        assert url == "https://archive.org/metadata/" + identifier
+        return {"metadata": {
+            "licenseurl": "https://creativecommons.org/publicdomain/zero/1.0/",
+            "description": "Historic city panorama"},
+            "files": [{"name": "1960_1920x1080.mp4", "size": "2000000"}]}
+    monkeypatch.setattr(online, "_http_json", fake)
+    clips = online._archive_theme("ia_history")
+    assert len(clips) == 1
+    assert clips[0]["name"] == "City 1960"
+    assert len(fetched) == 2
+    assert "mediatype%3Amovies" in fetched[0]
