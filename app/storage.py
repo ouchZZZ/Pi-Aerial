@@ -39,7 +39,11 @@ DEFAULTS = {
     'local_videos_enabled': True,
     'auto_update_enabled': False,
     'auto_update_interval_minutes': 60,
-    'online_sources': {'apple': True, 'nasa': True, 'robin': True},
+    'online_sources': {
+        'apple': True, 'nasa': True, 'robin': True,
+        'ia_nature': False, 'ia_cities': False, 'ia_history': False,
+        'ia_space': False, 'ia_timelapse': False,
+    },
     'online_cache_enabled': True,
     'online_autodownload_enabled': True,
     'online_cache_gb': 12,
@@ -79,7 +83,7 @@ def read_json(path: Path, fallback: dict | None = None) -> dict:
 def settings() -> dict:
     with LOCK:
         result = {**DEFAULTS, **read_json(DATA / 'settings.json')}
-        # Upgrade old settings transparently and enable new Robin source by default.
+        # Preserve existing provider choices; new Internet Archive topics are opt-in.
         sources = result.get('online_sources')
         if isinstance(sources, dict):
             result['online_sources'] = {
