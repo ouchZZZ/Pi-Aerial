@@ -157,7 +157,15 @@ function renderOnlineSources(){
   for(const source of status.online_sources||[]){
     const msg=source.error||'Каталог готов';
     const preparation=' · готово к показу: '+(source.playable||0);
-    const row=line(source.name,`${source.count} роликов${preparation} · ${msg}`);
+    const scan=source.scan||{};
+    const checked=source.id.startsWith('ia_')&&Number.isInteger(scan.scanned)
+      ?' · проверено: '+scan.scanned+
+        ' · найдено за проход: '+scan.accepted+
+        ' · качество не указано: '+scan.unverified:'';
+    const note=source.id.startsWith('ia_')&&!source.count&&!source.error
+      ?'Подходящих кандидатов пока нет':'';
+    const row=line(source.name,source.count+' роликов'+preparation+
+      checked+' · '+(note||msg));
     const label=document.createElement('label');
     const check=document.createElement('input');check.type='checkbox';
     check.checked=!!config[source.id];check.title='Включить источник '+source.name;
