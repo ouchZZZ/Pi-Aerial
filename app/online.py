@@ -1023,7 +1023,7 @@ def _download_failure_message(exc: Exception) -> str:
         message = str(exc)
         # ValueError is raised only with trusted, local diagnostic wording;
         # any URL inside third-party exception text still must be stripped.
-        message = re.sub(r"https?://[^\\s]+", "[адрес скрыт]", message)
+        message = re.sub(r"https?://\S+", "[адрес скрыт]", message)
         return message[:180] or "Недопустимый видеофайл"
     return "Ошибка подготовки: " + type(exc).__name__
 
@@ -1092,6 +1092,10 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                         video_progress.download("online", ident, total, length or None)
                 if total < 1024:
                     raise ValueError("Пустой видеоролик")
+                with temp.open("rb") as f:
+                    header = f.read(12)
+                if header[4:8] != b"ftyp":
+                    raise ValueError("Ответ сервера не содержит MP4/MOV")
                 # Metadata is incomplete for many Archive items. Real video
                 # dimensions are the final, non-negotiable admission gate.
                 if provider in ARCHIVE_THEMES:
@@ -1103,10 +1107,6 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                         raise ValueError(
                             f"Internet Archive: неподходящее качество "
                             f"{width}×{height}; нужно не ниже 1080p и 16:9")
-                with temp.open("rb") as f:
-                    header = f.read(12)
-                if header[4:8] != b"ftyp":
-                    raise ValueError("Ответ сервера не содержит MP4/MOV")
                 if shutil.which("ffmpeg") is None:
                     raise ValueError("Нужен ffmpeg для подготовки видео")
                 if shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES + total:
