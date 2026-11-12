@@ -295,9 +295,13 @@ def source_status() -> list[dict]:
                       and not state.get("error") else state.get("error")),
             "last_updated": state.get("updated"),
             "scan": ({
-                **state.get("scan", {}),
-                "accepted": min(state.get("scan", {}).get("accepted", 0),
-                                len(visible))
+                **{k: v for k, v in state.get("scan", {}).items()
+                   if k != "accepted_ids"},
+                "accepted": len(set(state.get("scan", {}).get("accepted_ids", []))
+                                & {entry.get("id") for entry in visible})
+                    if "accepted_ids" in state.get("scan", {})
+                    else min(state.get("scan", {}).get("accepted", 0),
+                             len(visible))
             } if provider in ARCHIVE_THEMES else {}),
         })
     return out
@@ -875,6 +879,7 @@ def _archive_theme(provider: str) -> list[dict]:
     ARCHIVE_SCAN_REPORT[provider] = {
         "scanned": len(docs),
         "accepted": len(results),
+        "accepted_ids": [clip["id"] for clip in results],
         "unverified": sum(clip["quality_verified"] is False for clip in results),
         "queries": successful_searches,
         "page": page, "next_cursor": cursor + 1,
