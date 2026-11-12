@@ -43,7 +43,10 @@ SOURCE_URLS = {
 }
 CATALOG_FILE = DATA / "online_catalog.json"
 PROCESSED_FILE = DATA / "online_processed.json"
+SCHEDULER_FILE = DATA / "online_scheduler.json"
 CACHE_FOLDER = DATA / "online_cache"
+# Round-robin order; the next turn survives application restarts.
+SOURCE_ORDER = ("robin", "apple", "nasa")
 REFRESH_SECONDS = 6 * 3600
 RESERVE_BYTES = 5 * 1024 ** 3
 LOCK = threading.RLock()
@@ -768,24 +771,25 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
             slot.release()
 
 
-def try_cache(entry: dict, stop: threading.Event | None = None) -> None:
+def try_cache(entry: dict, stop: threading.Event | None = None) -> bool:
+    """Return True only when a new background download was actually scheduled."""
     if stop is not None and stop.is_set():
-        return
+        return False
     cfg = settings()
     if (update_control.paused() or not cfg.get("online_autodownload_enabled", True)
             or not cfg.get("online_cache_enabled", True)
             or cache_status()["paused"]):
-        return
+        return False
     ident = entry["id"]
     with LOCK:
         if ((stop is not None and stop.is_set())
                 or ident in ACTIVE or cached_file(ident) is not None
                 or ident in _processed_ids()
                 or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
-            return
+            return False
         slot = DOWNLOAD_SLOT
         if not slot.acquire(blocking=False):
-            return
+            return False
         ACTIVE.add(ident)
         worker = threading.Thread(target=_cache_worker,
                                   args=(dict(entry), slot, stop), daemon=True)
@@ -798,6 +802,7 @@ def try_cache(entry: dict, stop: threading.Event | None = None) -> None:
             ACTIVE.discard(ident)
             slot.release()
         raise
+    return True
 
 
 def wait_for_cache_workers(stop: threading.Event, timeout: float = 20) -> None:
@@ -811,7 +816,12 @@ def wait_for_cache_workers(stop: threading.Event, timeout: float = 20) -> None:
 
 
 def warm_cache(stop: threading.Event | None = None) -> None:
-    """Schedule at most one new video; the next starts after full conversion."""
+    """Admit one video at a time, rotating providers after each accepted job.
+
+    All sources can fill the configured cache. The round-robin cursor is only
+    advanced after try_cache really starts a worker, so an occupied slot,
+    pause, failed entry or disabled provider cannot consume another turn.
+    """
     if stop is not None and stop.is_set():
         return
     cfg = settings()
@@ -822,31 +832,36 @@ def warm_cache(stop: threading.Event | None = None) -> None:
         return
     with LOCK:
         catalog = read_json(CATALOG_FILE).get("sources", {})
-    done = _processed_ids()
-    for provider in ("robin", "apple", "nasa"):
-        if not cfg.get("online_sources", {}).get(provider, False):
-            continue
-        items = catalog.get(provider, {}).get("items", [])
-        candidates = [entry for entry in items if isinstance(entry, dict)
-                      and allowed_video_url(entry.get("remote_url"), provider)]
-        # NASA retains its small warm set; Robin and Apple prepare unique clips
-        # one at a time, with bounded cache and a persistent no-redownload journal.
-        if provider == "nasa" and sum(
-                cached_file(e.get("id", "")) is not None for e in candidates) >= 2:
-            continue
-        for entry in candidates:
+        done = _processed_ids()
+        next_source = read_json(SCHEDULER_FILE).get("next")
+        start = SOURCE_ORDER.index(next_source) if next_source in SOURCE_ORDER else 0
+        order = SOURCE_ORDER[start:] + SOURCE_ORDER[:start]
+        for provider in order:
             if stop is not None and stop.is_set():
                 return
-            ident = entry.get("id", "")
-            if not isinstance(ident, str) or len(ident) != 24 or ident in done:
+            if not cfg.get("online_sources", {}).get(provider, False):
                 continue
-            if cached_file(ident) or CACHE_FAILED_UNTIL.get(ident, 0) > time.time():
+            items = catalog.get(provider, {}).get("items", [])
+            if not isinstance(items, list):
                 continue
-            if stop is None:
-                try_cache(entry)
-            else:
-                try_cache(entry, stop=stop)
-            return
+            for entry in items:
+                if stop is not None and stop.is_set():
+                    return
+                if not isinstance(entry, dict) or not allowed_video_url(
+                        entry.get("remote_url"), provider):
+                    continue
+                ident = entry.get("id", "")
+                if (not isinstance(ident, str) or len(ident) != 24
+                        or ident in done or cached_file(ident) is not None
+                        or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
+                    continue
+                scheduled = (try_cache(entry) if stop is None
+                             else try_cache(entry, stop=stop))
+                if scheduled:
+                    following = SOURCE_ORDER[
+                        (SOURCE_ORDER.index(provider) + 1) % len(SOURCE_ORDER)]
+                    atomic_json(SCHEDULER_FILE, {"next": following})
+                    return
 
 
 def clear_cache() -> int:
