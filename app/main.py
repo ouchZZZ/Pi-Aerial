@@ -386,6 +386,16 @@ def online_library_choose_multiple(value: LibrarySelection,
     return result
 
 
+@app.post('/api/admin/online/library/{clip_id}/retry')
+def online_library_retry(clip_id: str, _: None = Depends(auth.require_admin)):
+    try:
+        online_library.retry_selected(clip_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    online.warm_cache()
+    return {'ok': True}
+
+
 @app.post('/api/admin/online/refresh')
 async def online_refresh(_: None = Depends(auth.require_admin)):
     # Retry all enabled sources (with a one-minute minimum between requests).
