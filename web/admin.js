@@ -156,7 +156,7 @@ function renderOnlineSources(){
   const config=status.config.online_sources||{};
   for(const source of status.online_sources||[]){
     const msg=source.error||'Каталог готов';
-    const preparation=['apple','nasa'].includes(source.id)?` · готово к показу: ${source.playable||0}`:'';
+    const preparation=['apple','nasa','robin'].includes(source.id)?` · готово к показу: ${source.playable||0}`:'';
     const row=line(source.name,`${source.count} роликов${preparation} · ${msg}`);
     const label=document.createElement('label');
     const check=document.createElement('input');check.type='checkbox';
@@ -230,7 +230,8 @@ function renderLibrary(onlineVideos){
     `Готово: ${ready.length} · удалено, но сохранено в истории: ${deleted.length} · всего на диске: ${progressSize(ready.reduce((sum,v)=>sum+Number(v.bytes||0),0))}`;
   for(const v of onlineVideos){
     const provider=v.provider==='apple'?'Apple Aerial':
-      v.provider==='nasa'?'NASA':v.provider;
+      v.provider==='nasa'?'NASA':
+      v.provider==='robin'?'Robin Fourcade':v.provider;
     const state=v.cached?'Готов к просмотру · '+progressSize(v.bytes):
       'MP4 удалён · повторная загрузка заблокирована';
     const english=PiI18n.language==='en';
@@ -383,12 +384,12 @@ $('videoForm').addEventListener('submit',e=>{e.preventDefault();upload('videoFor
 $('onlineRefresh').addEventListener('click',async()=>{
   const button=$('onlineRefresh');
   button.disabled=true;
-  $('onlineSourceMessage').textContent='Проверяю Apple и NASA…';
+  $('onlineSourceMessage').textContent='Проверяю Apple, NASA и Robin Fourcade…';
   try{
     await api('/api/admin/online/refresh',{method:'POST'});
     await load();
     $('onlineSourceMessage').textContent='Проверка завершена';
-    toast('Каталоги Apple/NASA перепроверены');
+    toast('Каталоги Apple/NASA/Robin перепроверены');
   }catch(e){
     $('onlineSourceMessage').textContent=e.message;
     toast(e.message);
