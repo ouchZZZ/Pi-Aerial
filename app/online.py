@@ -630,7 +630,7 @@ def _nasa() -> list[dict]:
     counts["manifest_checked"] = len(selected)
     counts["pages"] = pages
     found: list[tuple[int, str, dict]] = []
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {
             pool.submit(_nasa_manifest, entry): (score, sid)
             for sid, (score, entry) in selected
@@ -996,7 +996,7 @@ def _archive_theme(provider: str) -> list[dict]:
             print(f"[online] archive {provider}/{ident}: {exc}", flush=True)
             return None
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=2) as pool:
         for clip in pool.map(resolve, docs):
             if clip:
                 results.append(clip)
