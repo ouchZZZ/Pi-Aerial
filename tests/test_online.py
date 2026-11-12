@@ -950,3 +950,59 @@ def test_archive_worker_rejects_real_sd_video_even_if_catalog_claimed_hd(monkeyp
     assert not (cache / (clip["id"] + ".mp4")).exists()
     assert not (cache / (clip["id"] + ".ready")).exists()
     assert clip["id"] in online.CACHE_FAILED_UNTIL
+
+
+
+def test_old_processed_history_cannot_block_selected_redownload(monkeypatch):
+    import threading
+    clip = online._clip("apple", "used", "https://sylvan.apple.com/old.mov",
+                        "Old", "Apple", "https://www.apple.com/")
+    ident = clip["id"]
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_cache_enabled": True, "online_autodownload_enabled": True,
+    })
+    monkeypatch.setattr(online, "cache_status", lambda: {"paused": False})
+    monkeypatch.setattr(online.update_control, "paused", lambda: False)
+    monkeypatch.setattr(online_library, "is_selected", lambda value: value == ident)
+    monkeypatch.setattr(online, "cached_file", lambda _: None)
+    monkeypatch.setattr(online, "_processed_ids", lambda: {ident})
+    slot = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(online, "DOWNLOAD_SLOT", slot)
+    called = threading.Event()
+
+    def worker(entry, borrowed, stop):
+        with online.LOCK:
+            online.ACTIVE.discard(entry["id"])
+            online.CACHE_WORKERS.pop(threading.current_thread(), None)
+            online.CANCEL_EVENTS.pop(entry["id"], None)
+        borrowed.release()
+        called.set()
+
+    monkeypatch.setattr(online, "_cache_worker", worker)
+    assert online.try_cache(clip) is True
+    assert called.wait(timeout=2)
+    assert slot.acquire(blocking=False)
+    slot.release()
+
+
+def test_download_failures_are_accurate_and_do_not_expose_addresses():
+    import urllib.error
+    for status, expected in [
+        (403, "HTTP 403"), (404, "HTTP 404"),
+        (429, "HTTP 429"), (503, "HTTP 503")
+    ]:
+        exc = urllib.error.HTTPError(
+            "https://archive.org/download/test/private.mp4",
+            status, "Forbidden", {}, None
+        )
+        detail = online._download_failure_message(exc)
+        assert expected in detail
+        assert "https://" not in detail
+    assert "ожидания" in online._download_failure_message(
+        urllib.error.URLError("timed out"))
+    assert "HTTPS" in online._download_failure_message(
+        urllib.error.URLError("SSL certificate verify failed"))
+    exc = ValueError("Unexpected https://archive.org/download/signed?token=secret next")
+    text = online._download_failure_message(exc)
+    assert "secret" not in text
+    assert "адрес скрыт" in text
