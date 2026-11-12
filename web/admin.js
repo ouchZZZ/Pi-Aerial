@@ -73,7 +73,8 @@ function renderVideoProgress(data){
   }
   const done=Array.isArray(data.recent)?data.recent:[];
   recent.textContent=done.length?
-    'Недавние задания: '+done.map(j=>(j.stage==='ready'?'Готово':'Ошибка')+' · '+j.name).join(' | '):'';
+    'Недавние задания: '+done.map(j=>(j.stage==='ready'?'Готово':'Ошибка')+
+      ' · '+j.name+(j.stage==='failed'&&j.message?' · '+j.message:'')).join(' | '):'';
 }
 let videoProgressBusy=false;
 async function refreshVideoProgress(){
