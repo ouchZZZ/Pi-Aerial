@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app import online
+from app import online, online_library
 from app.storage import update_settings
 
 
@@ -131,7 +131,8 @@ def test_cache_maximum_tracks_disk_size(monkeypatch, tmp_path):
 
 
 def test_source_settings_validation():
-    valid = {"apple": True, "nasa": True, "robin": True}
+    from app.storage import DEFAULTS
+    valid = dict(DEFAULTS["online_sources"])
     update_settings({"online_sources": valid, "online_cache_gb": 12})
     with pytest.raises(ValueError):
         update_settings({"online_sources": {"apple": True}})
@@ -312,6 +313,7 @@ def test_apple_mov_cache_forces_transcode_and_removes_source(monkeypatch, tmp_pa
         "apple", "ocean", "https://sylvan.apple.com/Videos/ocean.mov",
         "Ocean", "Apple", "https://www.apple.com/"
     )
+    monkeypatch.setattr(online_library, "is_selected", lambda ident: ident == clip["id"])
     assert online.DOWNLOAD_SLOT.acquire(blocking=False)
     online._cache_worker(clip)
     path = tmp_path / (clip["id"] + ".mp4")
@@ -391,6 +393,7 @@ def test_only_bounded_mov_prefetch_one_at_a_time(monkeypatch, tmp_path):
         "online_cache_enabled": True,
     })
     monkeypatch.setattr(online.shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    online_library.set_selected([clip["id"] for clip in clips], True)
     calls = []
     monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]) or True)
     online.warm_cache()
@@ -411,12 +414,18 @@ def test_processed_history_prevents_repeated_download_after_eviction(monkeypatch
         "online_sources": {"apple": True, "nasa": False},
     })
     monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "SCHEDULER_FILE", tmp_path / "scheduler.json")
     online.atomic_json(online.CATALOG_FILE, {
         "sources": {"apple": {"items": [clip]}}
     })
     monkeypatch.setattr(online.shutil, "which", lambda executable: "/usr/bin/ffmpeg")
+    calls = []
+    monkeypatch.setattr(online, "try_cache", lambda entry: calls.append(entry["id"]) or True)
     online.warm_cache()
-    assert clip["id"] not in online.ACTIVE
+    assert calls == []   # History does not grant automatic download anymore.
+    online_library.set_selected([clip["id"]], True)
+    online.warm_cache()
+    assert calls == [clip["id"]]  # Selecting again can redownload despite history.
 
 
 def test_cache_limit_pauses_without_eviction_then_resumes(monkeypatch, tmp_path):
@@ -459,6 +468,7 @@ def test_cache_limit_pauses_without_eviction_then_resumes(monkeypatch, tmp_path)
 
     config["online_cache_gb"] = 2
     assert not online.cache_status()["paused"]
+    online_library.set_selected([new["id"]], True)
     online.warm_cache()
     assert calls == [new["id"]]
     assert ready.exists()
@@ -643,6 +653,8 @@ def test_robin_clips_appear_only_after_normalization(monkeypatch, tmp_path):
     monkeypatch.setattr(online, "settings", lambda: {
         "online_sources": {"robin": True},
     })
+    assert online.lookup(clip["id"]) is None  # Suggestions are not playable.
+    online_library.set_selected([clip["id"]], True)
     assert online.lookup(clip["id"]) == clip
     assert online.list_clips() == []
 
@@ -655,9 +667,10 @@ def test_old_settings_gain_robin_source_without_losing_choices(monkeypatch, tmp_
     cfg = storage.settings()
     assert cfg["online_sources"] == {
         "apple": False, "nasa": True, "robin": True,
+        **{name: False for name in online.ARCHIVE_THEMES},
     }
     storage.update_settings({"online_sources": {
-        "apple": False, "nasa": True, "robin": False,
+        **cfg["online_sources"], "robin": False,
     }})
     assert storage.settings()["online_sources"]["robin"] is False
 
@@ -690,6 +703,9 @@ def test_all_sources_get_round_robin_turns_including_nasa_after_two(monkeypatch,
     done = set()
     monkeypatch.setattr(online, "cached_file", lambda ident: tmp_path if ident in cached else None)
     monkeypatch.setattr(online, "_processed_ids", lambda: set(done))
+    monkeypatch.setattr(online_library, "selected_ids", lambda: {
+        clip["id"] for items in clips.values() for clip in items
+    })
     scheduled = []
 
     def schedule(entry):
@@ -730,6 +746,9 @@ def test_round_robin_cursor_survives_a_restart_and_skips_disabled(monkeypatch, t
     })
     done = set()
     monkeypatch.setattr(online, "_processed_ids", lambda: set(done))
+    monkeypatch.setattr(online_library, "selected_ids", lambda: {
+        item["id"] for item in clips
+    })
     monkeypatch.setattr(online, "cached_file", lambda _: None)
     calls = []
 
@@ -761,6 +780,7 @@ def test_rejected_download_does_not_advance_round_robin(monkeypatch, tmp_path):
     online.atomic_json(online.CATALOG_FILE,
                        {"sources": {"robin": {"items": [clip]}}})
     monkeypatch.setattr(online, "_processed_ids", lambda: set())
+    monkeypatch.setattr(online_library, "selected_ids", lambda: {clip["id"]})
     monkeypatch.setattr(online, "cached_file", lambda _: None)
     monkeypatch.setattr(online, "try_cache", lambda entry: False)  # Busy slot.
     online.warm_cache()
