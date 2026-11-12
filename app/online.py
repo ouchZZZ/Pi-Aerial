@@ -96,7 +96,8 @@ SCHEDULER_FILE = DATA / "online_scheduler.json"
 CACHE_FOLDER = DATA / "online_cache"
 # Round-robin order; the next turn survives application restarts.
 SOURCE_ORDER = ("robin", "apple", "nasa", *ARCHIVE_THEMES)
-REFRESH_SECONDS = 6 * 3600
+DEFAULT_REFRESH_MINUTES = 60
+CATALOG_REFRESH_LOCK = threading.Lock()
 RESERVE_BYTES = 5 * 1024 ** 3
 LOCK = threading.RLock()
 DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
@@ -787,12 +788,20 @@ FETCHERS = {
 
 
 def refresh_catalog(force=False, stop: threading.Event | None = None) -> None:
+    """Serialize all automatic, manual and settings-triggered refreshes."""
+    with CATALOG_REFRESH_LOCK:
+        _refresh_catalog_inner(force=force, stop=stop)
+
+
+def _refresh_catalog_inner(force=False, stop: threading.Event | None = None) -> None:
     """Never drop last successful entries due to a transient API outage."""
     with LOCK:
         current = read_json(CATALOG_FILE)
         sources = {name: state for name, state in current.get("sources", {}).items()
                    if name in FETCHERS}
     cfg = settings()
+    interval_seconds = cfg.get("online_refresh_interval_minutes",
+                               DEFAULT_REFRESH_MINUTES) * 60
     changed = False
     for name, fetch in FETCHERS.items():
         if stop is not None and stop.is_set():
@@ -804,7 +813,7 @@ def refresh_catalog(force=False, stop: threading.Event | None = None) -> None:
         # Force a first refresh when switching from legacy tvOS 11 to tvOS 26.
         outdated_apple = name == "apple" and state.get("feed") != "tvos26"
         elapsed = time.time() - last_attempt
-        if elapsed < (60 if force or outdated_apple else REFRESH_SECONDS):
+        if elapsed < (60 if force or outdated_apple else interval_seconds):
             continue
         attempted = time.time()
         try:
