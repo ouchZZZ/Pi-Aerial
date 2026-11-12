@@ -1187,3 +1187,49 @@ def test_archive_minimum_duration_is_sixty_seconds_for_known_metadata():
     unknown = online._archive_candidate("ia_nature", doc, payload())
     assert unknown is not None and unknown["duration"] is None
     assert online._archive_duration_seconds("00:01:30") == 90
+
+
+
+def test_archive_worker_rejects_real_five_second_file_before_conversion(monkeypatch, tmp_path):
+    import io
+    import threading
+    from types import SimpleNamespace
+    from app import video_conversion
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(online, "CACHE_FOLDER", cache)
+    monkeypatch.setattr(online, "PROCESSED_FILE", tmp_path / "processed.json")
+    monkeypatch.setattr(online, "CACHE_FAILED_UNTIL", {})
+    monkeypatch.setattr(online, "settings", lambda: {
+        "online_cache_enabled": True, "online_autodownload_enabled": True,
+        "online_cache_gb": 12})
+    monkeypatch.setattr(online.shutil, "disk_usage",
+                        lambda _: SimpleNamespace(total=128*1024**3,
+                                                  free=80*1024**3))
+    monkeypatch.setattr(online.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+    data = b"\x00\x00\x00\x18ftypisom" + b"V" * 2048
+    class Response(io.BytesIO):
+        def __init__(self):
+            super().__init__(data)
+            self.headers = {"Content-Length": str(len(data))}
+    class Opener:
+        def open(self, req, timeout):
+            return Response()
+    monkeypatch.setattr(online.urllib.request, "build_opener",
+                        lambda *args: Opener())
+    monkeypatch.setattr(video_conversion, "probe_video",
+                        lambda _: {"width": 1920, "height": 1080})
+    monkeypatch.setattr(video_conversion, "probe_duration", lambda _: 5.0)
+    monkeypatch.setattr(online, "normalize_video",
+                        lambda *args, **kwargs: pytest.fail(
+                            "Short video was incorrectly admitted to converter"))
+    clip = online._clip("ia_timelapse", "short-recording",
+        "https://archive.org/download/short-recording/video.mp4",
+        "Starry Sky Time Lapse", "Uploader",
+        "https://archive.org/details/short-recording")
+    slot = threading.BoundedSemaphore(1)
+    assert slot.acquire(blocking=False)
+    online._cache_worker(clip, slot)
+    assert slot.acquire(blocking=False)
+    assert not (cache / (clip["id"] + ".mp4")).exists()
+    assert "длительность" in online.CACHE_FAILED_REASONS[clip["id"]]
