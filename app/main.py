@@ -382,7 +382,7 @@ def online_library_redownload(clip_id: str, _: None = Depends(auth.require_admin
 
 @app.post('/api/admin/online/refresh')
 async def online_refresh(_: None = Depends(auth.require_admin)):
-    # Retry Apple and NASA (with a one-minute minimum between requests).
+    # Retry all enabled sources (with a one-minute minimum between requests).
     await asyncio.to_thread(online.refresh_catalog, True)
     return {'ok': True, 'sources': online.source_status()}
 
