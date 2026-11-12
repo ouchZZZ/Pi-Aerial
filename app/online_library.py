@@ -52,6 +52,7 @@ def _metadata(entry: dict | None) -> dict:
         "subject": online._description(entry.get("subject")),
         "year": str(entry.get("year") or "")[:12],
         "quality": str(entry.get("quality") or "")[:36],
+        "quality_verified": entry.get("quality_verified") is True,
         "license": str(entry.get("license") or "")[:400],
         "thumbnail": str(entry.get("thumbnail") or "")[:400],
         "duration": entry.get("duration") if type(entry.get("duration")) is int else None,
