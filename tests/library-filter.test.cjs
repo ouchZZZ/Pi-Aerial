@@ -16,7 +16,14 @@ const librarySource=admin.slice(start,end);
 function makeNode(tag,id=''){
   return {
     tag,id,children:[],listeners:{},checked:false,hidden:false,textContent:'',
+    classList:{add(){},remove(){}},
     append(...items){this.children.push(...items);this.firstChild=this.children[0]||null;},
+    prepend(...items){this.children.unshift(...items);this.firstChild=this.children[0]||null;},
+    insertBefore(item,anchor){
+      const at=this.children.indexOf(anchor);
+      this.children.splice(at<0?this.children.length:at,0,item);
+      this.firstChild=this.children[0]||null;
+    },
     replaceChildren(...items){this.children=[...items];this.firstChild=items[0]||null;},
     addEventListener(type,listener){this.listeners[type]=listener;},
     dispatch(type){this.listeners[type]?.();},
@@ -60,12 +67,12 @@ function harness(){
     openLibraryPreview(){},playOnceButton:()=>makeNode('button'),
     ask:()=>false,api:async()=>({}),toast(){},load:async()=>{},loadLibrary:async()=>{},
   };
-  const api=vm.runInNewContext(librarySource+'\n({renderLibrary})',context);
+  const api=vm.runInNewContext(librarySource+'\n({renderLibrary,libraryMatches,filteredLibrary})',context);
   const videos=[
-    {provider:'apple',id:'apple1',name:'Ocean',cached:true,bytes:100},
-    {provider:'nasa',id:'nasa1',name:'Earth',cached:true,bytes:200},
-    {provider:'robin',id:'robin1',name:'Alps',cached:true,bytes:300},
-    {provider:'nasa',id:'nasa2',name:'Deleted Earth',cached:false,can_redownload:true},
+    {provider:'apple',id:'apple1',name:'Ocean',cached:true,selected:true,bytes:100},
+    {provider:'nasa',id:'nasa1',name:'Earth',cached:true,selected:true,bytes:200},
+    {provider:'robin',id:'robin1',name:'Alps',cached:true,selected:true,bytes:300},
+    {provider:'nasa',id:'nasa2',name:'Deleted Earth',cached:false,selected:false,can_select:true},
   ];
   const labels=()=>byId('librarySourceFilters').children.filter(n=>n.tag==='label');
   const choice=name=>{
@@ -74,7 +81,8 @@ function harness(){
   };
   const names=id=>byId(id).children
     .filter(row=>row.tag==='div')
-    .map(row=>row.firstChild.children[0].textContent);
+    .map(row=>row.children.find(child=>child.tag==='div'&&child.children[0]?.tag==='strong')
+      ?.children[0].textContent);
   return {status,videos,byId,api,labels,choice,names};
 }
 
@@ -93,7 +101,7 @@ test('library filter controls exist and can select a single source, two sources 
   }
   assert.deepEqual(ui.names('onlineLibraryList'),['Earth','Deleted Earth']);
   assert.equal(ui.byId('localLibraryCard').hidden,true);
-  assert.match(ui.byId('librarySummary').textContent,/Готово: 1/);
+  assert.match(ui.byId('librarySummary').textContent,/готово: 1/);
 
   const apple=ui.choice('Apple Aerial');
   apple.checked=true;
@@ -160,4 +168,36 @@ test('source-filter labels have English translations',()=>{
   for(const ru of ['Фильтр по источникам','Все источники','Нет включённых источников.','Выберите хотя бы один источник.']){
     assert.ok(i18n.includes("['"+ru+"','"),'missing English translation: '+ru);
   }
+});
+
+
+test('Siberia query matches English metadata and enables matching-only bulk buttons',()=>{
+  const ui=harness();
+  ui.videos.push({
+    provider:'nasa',id:'nasa3',name:'Lake Baikal',
+    description:'View over Siberia',cached:false,selected:false,can_select:true,
+  });
+  ui.api.renderLibrary(ui.videos);
+  // Query is maintained by the library UI state; use VM exported helpers.
+  // The existing filter must not be discarded when the catalog refreshes.
+  assert.match(admin,/сибирь.*siberia/);
+  assert.match(admin,/libraryQuery=e\.target\.value/);
+  assert.match(admin,/filteredLibrary\(\)\.online\.filter/);
+  assert.match(html,/id="librarySearch"/);
+  assert.match(html,/id="librarySelectVisible"/);
+  assert.match(html,/id="libraryUnselectVisible"/);
+  assert.match(html,/id="libraryShowMore"/);
+  assert.equal(ui.byId('librarySelectVisible').disabled,false);
+  assert.ok(ui.names('onlineLibraryList').includes('Lake Baikal'));
+});
+
+test('ready online clips retain preview and one-shot display controls',()=>{
+  const ui=harness();
+  ui.api.renderLibrary(ui.videos);
+  const row=ui.byId('onlineLibraryList').children.find(e=>
+    e.children.some(child=>child.children?.[0]?.textContent==='Ocean'));
+  assert.ok(row);
+  const controls=row.children.at(-1);
+  assert.ok(controls.children.some(button=>button.textContent==='Просмотр'));
+  assert.equal(controls.children.filter(button=>button.tag==='button').length,2);
 });
