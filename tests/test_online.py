@@ -1428,3 +1428,191 @@ def test_nasa_refresh_preserves_selected_old_entries(monkeypatch, tmp_path):
     assert {x["id"] for x in source["items"]} == {prior["id"], fresh["id"]}
     assert source["scan"]["scanned"] == 12
     assert next(x for x in online.source_status() if x["id"] == "nasa")["scan"]["accepted"] == 1
+
+
+
+def test_archive_transfer_resumes_at_verified_byte_offset(monkeypatch, tmp_path):
+    import io
+    import threading
+    from types import SimpleNamespace
+    complete = b"\x00\x00\x00\x18ftypisom" + b"A" * 3588
+    split = 850
+    requests = []
+
+    class FakeResponse(io.BytesIO):
+        def __init__(self, body, status, headers, fail=False):
+            super().__init__(body)
+            self.status = status
+            self.headers = headers
+            self.fail = fail
+
+        def read(self, n=-1):
+            if self.fail and self.tell() >= split:
+                raise ConnectionResetError("Archive mirror closed connection")
+            return super().read(min(n, split) if self.fail else n)
+
+    class Opener:
+        def open(self, request, timeout):
+            requests.append(request)
+            if len(requests) == 1:
+                return FakeResponse(
+                    complete[:split], 200,
+                    {"Content-Length": str(len(complete)), "ETag": '"original"'},
+                    fail=True)
+            assert request.get_header("Range") == f"bytes={split}-"
+            assert request.get_header("If-range") == '"original"'
+            rest = complete[split:]
+            return FakeResponse(rest, 206, {
+                "Content-Range": f"bytes {split}-{len(complete)-1}/{len(complete)}",
+                "Content-Length": str(len(rest)),
+            })
+
+    monkeypatch.setattr(online.time, "sleep", lambda _: None)
+    monkeypatch.setattr(online.shutil, "disk_usage",
+                        lambda _: SimpleNamespace(free=80*1024**3))
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
+    temp = tmp_path / "sample.part"
+    size = online._download_archive_with_resume(
+        Opener(), "https://archive.org/download/item/video.mp4",
+        temp, len(complete) + 1024, threading.Event(), "a" * 24)
+    assert size == len(complete)
+    assert temp.read_bytes() == complete
+    assert len(requests) == 2
+
+
+def test_archive_transfer_restarts_if_server_ignores_range(monkeypatch, tmp_path):
+    import io
+    import threading
+    from types import SimpleNamespace
+
+    complete = b"ftyp" * 600
+    split = 500
+    requests = []
+
+    class FakeResponse(io.BytesIO):
+        def __init__(self, data, headers, fail=False):
+            super().__init__(data)
+            self.headers = headers
+            self.status = 200
+            self.fail = fail
+
+        def read(self, n=-1):
+            if self.fail and self.tell() > 0:
+                raise TimeoutError("read stalled")
+            return super().read(min(n, split) if self.fail else n)
+
+    class Opener:
+        def open(self, request, timeout):
+            requests.append(request)
+            if len(requests) == 1:
+                return FakeResponse(complete[:split],
+                                    {"Content-Length": str(len(complete))},
+                                    fail=True)
+            assert request.get_header("Range") == f"bytes={split}-"
+            return FakeResponse(complete, {"Content-Length": str(len(complete))})
+
+    monkeypatch.setattr(online.time, "sleep", lambda _: None)
+    monkeypatch.setattr(online.shutil, "disk_usage",
+                        lambda _: SimpleNamespace(free=80*1024**3))
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
+    temp = tmp_path / "sample.part"
+    total = online._download_archive_with_resume(
+        Opener(), "https://archive.org/download/item/video.mp4",
+        temp, len(complete) + 1024, threading.Event(), "a" * 24)
+    assert total == len(complete)
+    assert temp.read_bytes() == complete
+    assert len(requests) == 2
+
+
+def test_archive_rejects_incorrect_resume_offset(monkeypatch, tmp_path):
+    import io
+    import threading
+    from types import SimpleNamespace
+
+    class FakeResponse(io.BytesIO):
+        def __init__(self, data, headers, status):
+            super().__init__(data)
+            self.headers = headers
+            self.status = status
+
+        def read(self, n=-1):
+            if self.status == 200 and self.tell() >= 200:
+                raise ConnectionResetError("disconnect")
+            return super().read(min(200, n) if self.status == 200 else n)
+
+    class Opener:
+        def __init__(self):
+            self.calls = 0
+
+        def open(self, request, timeout):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeResponse(b"X" * 200, {"Content-Length": "1000"}, 200)
+            return FakeResponse(
+                b"Y" * 799,
+                {"Content-Range": "bytes 201-999/1000",
+                 "Content-Length": "799"}, 206)
+
+    monkeypatch.setattr(online.time, "sleep", lambda _: None)
+    monkeypatch.setattr(online.shutil, "disk_usage",
+                        lambda _: SimpleNamespace(free=80*1024**3))
+    monkeypatch.setattr(online, "CACHE_FOLDER", tmp_path)
+    opener = Opener()
+    with pytest.raises(ValueError, match="несовпадение частей файла"):
+        online._download_archive_with_resume(
+            opener, "https://archive.org/download/item/video.mp4",
+            tmp_path / "sample.part", 8192, threading.Event(), "a" * 24)
+    assert opener.calls == 2
+
+
+def test_archive_retry_is_bounded_and_never_retries_access_denied(monkeypatch, tmp_path):
+    import threading
+    import urllib.error
+    monkeypatch.setattr(online.time, "sleep", lambda _: None)
+
+    class Opener:
+        def __init__(self, error):
+            self.calls = 0
+            self.error = error
+
+        def open(self, request, timeout):
+            self.calls += 1
+            raise self.error
+
+    opener = Opener(ConnectionResetError("reset"))
+    with pytest.raises(ConnectionResetError):
+        online._download_archive_with_resume(
+            opener, "https://archive.org/download/item/video.mp4",
+            tmp_path / "sample.part", 8192, threading.Event(), "a" * 24)
+    assert opener.calls == online.ARCHIVE_DOWNLOAD_ATTEMPTS
+
+    error = urllib.error.HTTPError(
+        "https://archive.org/download/item/video.mp4", 403,
+        "Forbidden", {}, None)
+    rejected = Opener(error)
+    with pytest.raises(urllib.error.HTTPError):
+        online._download_archive_with_resume(
+            rejected, "https://archive.org/download/item/video.mp4",
+            tmp_path / "sample2.part", 8192, threading.Event(), "b" * 24)
+    assert rejected.calls == 1
+
+
+def test_archive_retry_stops_when_user_cancels(monkeypatch, tmp_path):
+    import threading
+    stop = threading.Event()
+    calls = []
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append(1)
+            raise ConnectionResetError("reset")
+
+    def cancel(_):
+        stop.set()
+
+    monkeypatch.setattr(online.time, "sleep", cancel)
+    with pytest.raises(InterruptedError):
+        online._download_archive_with_resume(
+            Opener(), "https://archive.org/download/item/video.mp4",
+            tmp_path / "sample.part", 8192, stop, "a" * 24)
+    assert len(calls) == 1

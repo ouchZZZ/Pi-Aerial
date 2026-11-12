@@ -10,6 +10,7 @@ from . import update_control
 
 import hashlib
 import html
+import http.client
 import io
 import json
 import os
@@ -1343,6 +1344,150 @@ def verify_old_nasa_cache_once() -> None:
 
 
 
+# Archive's download mirrors sometimes close connections mid-transfer. Keep a
+# bounded, in-job resume loop. Never append data unless the server confirms the
+# exact byte offset via HTTP 206 Content-Range.
+ARCHIVE_DOWNLOAD_ATTEMPTS = 4
+ARCHIVE_RETRY_DELAYS = (2, 4, 8)
+
+
+def _retryable_archive_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (500, 502, 503, 504)
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return False
+        if isinstance(reason, (TimeoutError, ConnectionError, http.client.IncompleteRead)):
+            return True
+        return bool(re.search(
+            r"(?:timed out|timeout|connection reset|remote end closed|"
+            r"connection aborted|unexpected eof)",
+            str(reason), re.IGNORECASE))
+    return isinstance(exc, (
+        TimeoutError, ConnectionError, http.client.IncompleteRead, ssl.SSLEOFError
+    ))
+
+
+def _download_archive_with_resume(opener, url: str, temp: Path,
+                                  file_limit: int, stop, ident: str) -> int:
+    """Retry interrupted Archive transfers, resuming only verified HTTP ranges.
+
+    The .part file is local to one worker, discarded when the worker finishes.
+    Retries never bypass the existing SafeRedirect/TLS checks.
+    """
+    expected_size = None
+    validator = None
+    for attempt in range(ARCHIVE_DOWNLOAD_ATTEMPTS):
+        if stop.is_set():
+            raise InterruptedError("Фоновая загрузка остановлена")
+        offset = temp.stat().st_size if temp.is_file() else 0
+        headers = {"User-Agent": "PiAerial/0.3"}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+            if validator:
+                headers["If-Range"] = validator
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with opener.open(req, timeout=18) as response:
+                status = getattr(response, "status", 200)
+                length_header = response.headers.get("Content-Length")
+                length = int(length_header) if length_header else None
+                if length is not None and length < 0:
+                    raise ValueError("Отрицательный размер видеофайла")
+
+                if offset and status == 206:
+                    range_header = response.headers.get("Content-Range", "")
+                    match = re.fullmatch(r"bytes\s+(\d+)-(\d+)/(\d+)",
+                                         range_header.strip())
+                    if match is None:
+                        raise ValueError("Internet Archive: неверный Content-Range")
+                    start, end, full_size = map(int, match.groups())
+                    if (start != offset or end < start
+                            or full_size <= end
+                            or (length is not None and length != end - start + 1)
+                            or (expected_size is not None and
+                                expected_size != full_size)):
+                        raise ValueError("Internet Archive: несовпадение частей файла")
+                    expected_size = full_size
+                elif offset and status == 200:
+                    # Mirrors may ignore Range; restart rather than append to
+                    # a new full response and corrupt the resulting MP4.
+                    print(f"[online] Archive mirror ignored Range for {ident}; "
+                          "restarting full file", flush=True)
+                    offset = 0
+                    expected_size = length
+                elif offset:
+                    raise ValueError("Internet Archive: неожиданный ответ на Range")
+                elif status not in (200, 206):
+                    raise ValueError("Internet Archive: неожиданный статус ответа")
+                elif status == 206:
+                    # A first request must not silently start from a nonzero
+                    # byte even when a mirror returns partial content.
+                    range_header = response.headers.get("Content-Range", "")
+                    match = re.fullmatch(r"bytes\s+0-(\d+)/(\d+)",
+                                         range_header.strip())
+                    if match is None:
+                        raise ValueError("Internet Archive: неверный начальный Range")
+                    end, expected_size = map(int, match.groups())
+                    if expected_size <= end or (
+                            length is not None and length != end + 1):
+                        raise ValueError("Internet Archive: неверный начальный размер")
+                else:
+                    expected_size = length
+
+                if expected_size is not None and expected_size > file_limit:
+                    raise ValueError(
+                        "Размер ролика превышает 50% свободной квоты кеша")
+                if offset == 0:
+                    etag = response.headers.get("ETag") or ""
+                    validator = (
+                        etag if etag and not etag.startswith("W/")
+                        else response.headers.get("Last-Modified")
+                    )
+
+                total = offset
+                with temp.open("ab" if offset else "wb") as file:
+                    video_progress.download("online", ident, total, expected_size)
+                    while True:
+                        if stop.is_set():
+                            raise InterruptedError("Фоновая загрузка снята с выбора")
+                        buf = response.read(1024 * 256)
+                        if not buf:
+                            break
+                        total += len(buf)
+                        if (total > file_limit
+                                or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES):
+                            raise ValueError(
+                                "Достигнут лимит видео или свободного места")
+                        file.write(buf)
+                        video_progress.download("online", ident, total, expected_size)
+                if expected_size is not None and total != expected_size:
+                    if total < expected_size:
+                        raise http.client.IncompleteRead(
+                            b"", expected_size - total)
+                    raise ValueError("Internet Archive: сервер прислал лишние байты")
+                return total
+        except Exception as exc:
+            if not _retryable_archive_error(exc) or attempt + 1 >= ARCHIVE_DOWNLOAD_ATTEMPTS:
+                raise
+            if stop.is_set():
+                raise InterruptedError("Фоновая загрузка снята с выбора") from exc
+            received = temp.stat().st_size if temp.is_file() else 0
+            print(f"[online] Archive download retry {attempt + 2}/"
+                  f"{ARCHIVE_DOWNLOAD_ATTEMPTS} for {ident}, "
+                  f"received={received} bytes, error={type(exc).__name__}",
+                  flush=True)
+            # Short backoff, polling cancellation to avoid holding the media
+            # worker for a full delay after the admin excludes a clip.
+            delay = ARCHIVE_RETRY_DELAYS[attempt]
+            for _ in range(delay * 10):
+                if stop.is_set():
+                    raise InterruptedError("Фоновая загрузка снята с выбора")
+                time.sleep(0.1)
+    raise AssertionError("unreachable Archive retry state")
+
+
 def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                   stop: threading.Event | None = None) -> None:
     # Keep the acquired semaphore even if the module global is replaced.
@@ -1376,26 +1521,31 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
             video_progress.start("online", ident, entry.get("name") or ident, provider)
             opener = urllib.request.build_opener(SafeRedirect(provider),
                                                   urllib.request.HTTPSHandler(context=_tls_context()))
-            req = urllib.request.Request(entry["remote_url"],
-                                         headers={"User-Agent": "PiAerial/0.3"})
             total = 0
             try:
-                with opener.open(req, timeout=18) as response, temp.open("xb") as file:
-                    length = int(response.headers.get("Content-Length") or 0)
-                    if length > file_limit:
-                        raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
-                    video_progress.download("online", ident, 0, length or None)
-                    while True:
-                        if combined.is_set():
-                            raise InterruptedError("Фоновая загрузка снята с выбора")
-                        buf = response.read(1024 * 256)
-                        if not buf:
-                            break
-                        total += len(buf)
-                        if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
-                            raise ValueError("Достигнут лимит видео или свободного места")
-                        file.write(buf)
-                        video_progress.download("online", ident, total, length or None)
+                if provider in ARCHIVE_THEMES:
+                    total = _download_archive_with_resume(
+                        opener, entry["remote_url"], temp,
+                        file_limit, combined, ident)
+                else:
+                    req = urllib.request.Request(
+                        entry["remote_url"], headers={"User-Agent": "PiAerial/0.3"})
+                    with opener.open(req, timeout=18) as response, temp.open("xb") as file:
+                        length = int(response.headers.get("Content-Length") or 0)
+                        if length > file_limit:
+                            raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
+                        video_progress.download("online", ident, 0, length or None)
+                        while True:
+                            if combined.is_set():
+                                raise InterruptedError("Фоновая загрузка снята с выбора")
+                            buf = response.read(1024 * 256)
+                            if not buf:
+                                break
+                            total += len(buf)
+                            if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
+                                raise ValueError("Достигнут лимит видео или свободного места")
+                            file.write(buf)
+                            video_progress.download("online", ident, total, length or None)
                 if total < 1024:
                     raise ValueError("Пустой видеоролик")
                 with temp.open("rb") as f:
