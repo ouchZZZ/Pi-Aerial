@@ -165,6 +165,8 @@
     ['Ошибка, повторная попытка позже','Failed, retry later'],
     ['Нет в текущем каталоге','No longer in source catalog'],
     ['В очереди загрузки','Queued for download'],
+    ['Повторить загрузку','Retry download'],
+    ['Ролик снова в очереди','Clip requeued for download'],
     ['Поиск не дал результатов.','No matching clips.'],
     ['Своих готовых файлов по запросу нет.','No matching uploaded files.'],
     ['Оригинал','Original'],
