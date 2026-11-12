@@ -201,6 +201,7 @@ async function loadLibrary(){
   libraryLoading=true;
   try{
     const data=await api('/api/admin/online/library');
+    excludedLibraryVideos=Array.isArray(data.excluded)?data.excluded:[];
     renderLibrary(Array.isArray(data.videos)?data.videos:[]);
   }catch(e){
     $('librarySummary').textContent='Не удалось получить список: '+e.message;
@@ -229,6 +230,7 @@ function playOnceButton(source,name){
   return button;
 }
 let libraryVideos=[];
+let excludedLibraryVideos=[];
 let librarySelectedSources=null;
 let libraryKnownSources=new Set();
 let libraryQuery='';
@@ -326,8 +328,32 @@ async function updateLibrarySelection(ids,selected){
     toast(error.message);await loadLibrary();
   }
 }
+function renderExcludedLibrary(){
+  $('excludedLibraryCount').textContent=String(excludedLibraryVideos.length);
+  const root=$('excludedLibraryList');root.replaceChildren();
+  for(const v of excludedLibraryVideos){
+    const name=PiI18n.language==='en'?(v.name_en||v.name):v.name;
+    const row=line(name||v.id,(v.provider||'Онлайн')+
+      (v.quality?' · '+v.quality:''));
+    const restore=textNode('button','Вернуть');
+    restore.type='button';
+    restore.addEventListener('click',async()=>{
+      restore.disabled=true;
+      try{
+        await api('/api/admin/online/library/'+encodeURIComponent(v.id)+'/excluded',
+          {method:'PUT',body:{excluded:false}});
+        toast('Ролик возвращён в библиотеку');
+        await load();await loadLibrary();
+      }catch(error){toast(error.message);restore.disabled=false}
+    });
+    row.append(restore);root.append(row);
+  }
+  if(!excludedLibraryVideos.length)
+    root.append(textNode('p','Исключённых роликов пока нет.','hint'));
+}
 function renderLibrary(onlineVideos){
   libraryVideos=onlineVideos;
+  renderExcludedLibrary();
   renderLibrarySourceFilters();
   const results=filteredLibrary();
   const matching=results.online;
@@ -405,6 +431,21 @@ function renderLibrary(onlineVideos){
       link.href=v.page;link.target='_blank';link.rel='noopener noreferrer';
       controls.append(link);
     }
+    const exclude=textNode('button','Исключить');
+    exclude.type='button';
+    exclude.addEventListener('click',async()=>{
+      const prompt=v.cached?'Исключить ролик и удалить скачанный файл?':
+        'Исключить ролик из библиотеки?';
+      if(!ask(prompt))return;
+      exclude.disabled=true;
+      try{
+        await api('/api/admin/online/library/'+encodeURIComponent(v.id)+'/excluded',
+          {method:'PUT',body:{excluded:true}});
+        toast('Ролик исключён, скачанная копия удалена');
+        await load();await loadLibrary();
+      }catch(error){toast(error.message);exclude.disabled=false}
+    });
+    controls.append(exclude);
     row.append(controls);onlineRoot.append(row);
   }
   if(!matching.length)onlineRoot.append(textNode('p','Поиск не дал результатов.','hint'));
