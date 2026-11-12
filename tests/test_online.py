@@ -797,6 +797,8 @@ def test_internet_archive_url_hosts_reject_ssrf_and_other_archive_endpoints():
         "https://archive.org/download/historic-city/movie.mp4", src)
     assert online.allowed_video_url(
         "https://ia800304.us.archive.org/download/historic-city/movie.mp4", src)
+    assert online.allowed_video_url(
+        "https://ia800304.us.archive.org/14/items/historic-city/movie.mp4", src)
     for url in [
         "http://archive.org/download/historic-city/video.mp4",
         "https://archive.org.evil.test/download/clip/v.mp4",
