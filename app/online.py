@@ -130,10 +130,14 @@ def allowed_video_url(url: str, provider: str) -> bool:
             "nasa": ("nasa.gov",),
         }.get(provider, ())
         if provider in ARCHIVE_THEMES:
-            # Archive downloads redirect to numbered archive.org storage hosts.
-            # Never follow arbitrary hostnames or item metadata URLs.
-            if not (host == "archive.org" or
-                    re.fullmatch(r"ia[0-9]+\.us\.archive\.org", host)):
+            # Archive redirects canonical downloads to storage machines in
+            # both the US (iaXXXX.us.archive.org) and Canada
+            # (dnXXXX.ca.archive.org). Trust only these exact host patterns,
+            # plus the original archive.org download endpoint. Never allow
+            # generic *.archive.org, private hosts or arbitrary paths.
+            storage_node = re.fullmatch(
+                r"(?:ia[0-9]+\.us|dn[0-9]+\.ca)\.archive\.org", host)
+            if host != "archive.org" and storage_node is None:
                 return False
             parts = urllib.parse.unquote(parsed.path).split("/")
             if len(parts) < 4:
@@ -142,7 +146,7 @@ def allowed_video_url(url: str, provider: str) -> bool:
             # on an archive-owned storage node.
             if parts[1] == "download":
                 identifier, filename = parts[2], parts[3:]
-            elif (host != "archive.org" and len(parts) >= 5
+            elif (storage_node is not None and len(parts) >= 5
                   and re.fullmatch(r"[0-9]{1,6}", parts[1])
                   and parts[2] == "items"):
                 identifier, filename = parts[3], parts[4:]
@@ -195,7 +199,13 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         if not allowed_video_url(newurl, self.provider):
-            raise ValueError("Redirect to untrusted video host")
+            # Log the hostname, never the full signed URL or query string.
+            try:
+                rejected_host = urllib.parse.urlsplit(newurl).hostname or "unknown"
+            except ValueError:
+                rejected_host = "invalid"
+            raise ValueError(
+                f"Redirect to untrusted video host: {rejected_host[:120]}")
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 

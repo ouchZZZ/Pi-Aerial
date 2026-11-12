@@ -801,6 +801,11 @@ def test_internet_archive_url_hosts_reject_ssrf_and_other_archive_endpoints():
         "https://ia800304.us.archive.org/download/historic-city/movie.mp4", src)
     assert online.allowed_video_url(
         "https://ia800304.us.archive.org/14/items/historic-city/movie.mp4", src)
+    # Internet Archive may route requests via Canadian DN storage nodes.
+    assert online.allowed_video_url(
+        "https://dn790001.ca.archive.org/0/items/historic-city/movie.mp4", src)
+    assert online.allowed_video_url(
+        "https://dn790001.ca.archive.org/0/items/historic-city/subfolder/movie.mp4", src)
     for url in [
         "http://archive.org/download/historic-city/video.mp4",
         "https://archive.org.evil.test/download/clip/v.mp4",
@@ -809,8 +814,34 @@ def test_internet_archive_url_hosts_reject_ssrf_and_other_archive_endpoints():
         "https://archive.org/download/clip/../etc/passwd",
         "https://archive.org/download/clip/%2e%2e/passwd",
         "https://evil.us.archive.org/download/clip/v.mp4",
+        "https://dn790001.ca.archive.org.evil.test/0/items/clip/video.mp4",
+        "https://dn790001.ca.archive.org/0/items/clip/../secrets.mp4",
+        "https://dn790001.ca.archive.org/0/items/clip/%2e%2e/secrets.mp4",
+        "https://dn790001.ca.archive.org/0/items/clip//video.mp4",
+        "https://dn790001.ca.archive.org/api/admin",
+        "https://dn790001.ca.archive.org/0/items/../../private.mp4",
+        "http://dn790001.ca.archive.org/0/items/clip/video.mp4",
+        "https://127.0.0.1/0/items/clip/video.mp4",
+        "https://localhost/0/items/clip/video.mp4",
     ]:
         assert not online.allowed_video_url(url, src), url
+
+
+
+def test_archive_redirect_handler_allows_canadian_storage_and_diagnoses_unsafe_host():
+    from urllib.request import Request
+    request = Request("https://archive.org/download/historic-city/movie.mp4")
+    handler = online.SafeRedirect("ia_history")
+    accepted = "https://dn790001.ca.archive.org/0/items/historic-city/movie.mp4"
+    redirect = handler.redirect_request(request, None, 302, "Found", {}, accepted)
+    assert redirect.full_url == accepted
+
+    # The diagnostic exposes only the host. Signed query strings are secret.
+    with pytest.raises(ValueError, match="untrusted video host: files.evil.test"):
+        handler.redirect_request(
+            request, None, 302, "Found", {},
+            "https://files.evil.test/foo.mp4?token=secret"
+        )
 
 
 def test_internet_archive_candidates_require_explicit_license_widescreen_hd():
