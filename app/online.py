@@ -103,10 +103,22 @@ def allowed_video_url(url: str, provider: str) -> bool:
                     re.fullmatch(r"ia[0-9]+\.us\.archive\.org", host)):
                 return False
             parts = urllib.parse.unquote(parsed.path).split("/")
-            return (len(parts) >= 4 and parts[1] == "download"
-                    and re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", parts[2]) is not None
+            if len(parts) < 4:
+                return False
+            # Canonical /download/id/file redirects to /N/items/id/file
+            # on an archive-owned storage node.
+            if parts[1] == "download":
+                identifier, filename = parts[2], parts[3:]
+            elif (host != "archive.org" and len(parts) >= 5
+                  and re.fullmatch(r"[0-9]{1,6}", parts[1])
+                  and parts[2] == "items"):
+                identifier, filename = parts[3], parts[4:]
+            else:
+                return False
+            return (re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", identifier) is not None
+                    and bool(filename)
                     and all(part not in ("", ".", "..") and "\\" not in part
-                            for part in parts[3:]))
+                            for part in filename))
         if provider == "robin":
             # GitHub release downloads redirect to signed GitHub asset CDN URLs.
             # Never accept an arbitrary repository or third-party media host.
