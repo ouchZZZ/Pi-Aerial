@@ -5,12 +5,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolated_background_workers(monkeypatch, request):
+def isolated_background_workers(monkeypatch, request, tmp_path):
     # Intentionally live integration tests must opt in explicitly.
     if request.node.get_closest_marker("external_network"):
         return
 
-    from app import main
+    from app import main, online_library
+    # Moderation persistence must never leak between independent tests.
+    monkeypatch.setattr(online_library, "SELECTION_FILE", tmp_path / "selection.json")
 
     def idle(stop):
         stop.wait()
