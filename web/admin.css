@@ -96,3 +96,8 @@
 .url-play-form label{flex:1 1 350px;margin:0}
 .url-play-form button{flex:0 0 auto}
 @media(max-width:650px){.url-play-form button{width:100%}}
+
+/* The exclusion list stays collapsed until explicitly requested. */
+#excludedLibraryCard > summary { cursor: pointer; font-weight: 600; }
+#excludedLibraryCard[open] > summary { margin-bottom: 1rem; }
+#excludedLibraryList .line { align-items: center; }
