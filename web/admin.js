@@ -159,11 +159,16 @@ function renderOnlineSources(){
     const msg=source.error||'Каталог готов';
     const preparation=' · готово к показу: '+(source.playable||0);
     const scan=source.scan||{};
-    const checked=source.id.startsWith('ia_')&&Number.isInteger(scan.scanned)
+    const checked=source.id==='nasa'&&Number.isInteger(scan.scanned)
+      ?' · проверено: '+scan.scanned+
+        ' · отсеяно по содержанию: '+(scan.rejected_metadata||0)+
+        ' · найдено за проход: '+(scan.accepted||0)+
+        ' · ошибок поиска: '+(scan.search_errors||0)
+      :source.id.startsWith('ia_')&&Number.isInteger(scan.scanned)
       ?' · проверено: '+scan.scanned+
         ' · найдено за проход: '+scan.accepted+
         ' · качество не указано: '+scan.unverified:'';
-    const note=source.id.startsWith('ia_')&&!source.count&&!source.error
+    const note=(source.id.startsWith('ia_')||source.id==='nasa')&&!source.count&&!source.error
       ?'Подходящих кандидатов пока нет':'';
     const row=line(source.name,source.count+' роликов'+preparation+
       checked+' · '+(note||msg));

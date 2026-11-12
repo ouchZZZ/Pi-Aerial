@@ -344,8 +344,7 @@ def source_status() -> list[dict]:
                     if "accepted_ids" in state.get("scan", {})
                     else min(state.get("scan", {}).get("accepted", 0),
                              len(visible))
-            } if provider in ARCHIVE_THEMES else
-                state.get("scan", {}) if provider == "nasa" else {}),
+            } if provider in ARCHIVE_THEMES or provider == "nasa" else {}),
         })
     return out
 
@@ -1068,7 +1067,8 @@ def _refresh_catalog_inner(force=False, stop: threading.Event | None = None) -> 
                         if item.get("id") in selected}
                 kept.update({item["id"]: item for item in clips})
                 state["items"] = list(kept.values())[:200]
-                state["scan"] = dict(NASA_SCAN_REPORT)
+                state["scan"] = {**NASA_SCAN_REPORT,
+                                 "accepted_ids": [clip["id"] for clip in clips]}
             if name in ARCHIVE_THEMES:
                 # Retain previously discovered suggestions across refreshes.
                 old = [item for item in sources.get(name, {}).get("items", [])
