@@ -142,6 +142,7 @@ def set_selected(ids: list[str], selected: bool) -> dict:
             current.update(ids)
             for ident in ids:
                 online.CACHE_FAILED_UNTIL.pop(ident, None)
+                online.CACHE_FAILED_REASONS.pop(ident, None)
         else:
             current.difference_update(ids)
             for ident in ids:
@@ -216,6 +217,7 @@ def list_videos() -> list[dict]:
                 "active": active,
                 "can_select": ident in catalog,
                 "failed": online.CACHE_FAILED_UNTIL.get(ident, 0) > time.time(),
+                "error": online.CACHE_FAILED_REASONS.get(ident, ""),
                 "processed": ident in old,
             })
         return sorted(items, key=lambda item: (
@@ -229,3 +231,22 @@ def ready_path(ident: str) -> Path | None:
         return None
     with online.LOCK:
         return online.cached_file(ident)
+
+
+
+def retry_selected(ident: str) -> bool:
+    """Requeue a chosen, failed video without changing its moderation state."""
+    if not _valid_id(ident):
+        raise ValueError("Неверный идентификатор ролика")
+    with online.LOCK:
+        if ident not in _selection_state():
+            raise ValueError("Сначала выберите ролик галочкой")
+        if ident not in _entries():
+            raise ValueError("Ролик отсутствует в каталоге источника")
+        if ident in online.ACTIVE:
+            raise ValueError("Ролик уже загружается")
+        if online.cached_file(ident) is not None:
+            raise ValueError("Ролик уже подготовлен")
+        online.CACHE_FAILED_UNTIL.pop(ident, None)
+        online.CACHE_FAILED_REASONS.pop(ident, None)
+    return True
