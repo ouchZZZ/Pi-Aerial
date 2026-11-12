@@ -50,6 +50,35 @@ ARCHIVE_THEMES = {
                      '(title:(timelapse OR time-lapse OR aurora) '
                      'OR subject:(time-lapse OR timelapse OR aurora))'),
 }
+# A few distinct searches per topic work much better than a single popular page.
+# Terms are trusted constants, never user-supplied query fragments.
+ARCHIVE_SEARCHES = {
+    "ia_nature": (
+        'title:(landscape OR scenery OR wilderness OR mountains OR waterfall OR coastline)',
+        'subject:(nature OR landscape OR aerial OR drone OR mountains OR ocean)',
+        '(nature OR wilderness OR forest OR river) AND (aerial OR drone OR timelapse)',
+    ),
+    "ia_cities": (
+        'title:(skyline OR cityscape OR aerial OR panorama OR city)',
+        'subject:(architecture OR skyline OR cityscape OR urban OR aerial)',
+        '(drone OR aerial OR panorama) AND (city OR buildings OR urban)',
+    ),
+    "ia_history": (
+        '(collection:prelinger) AND (city OR street OR skyline OR urban OR aerial)',
+        '(historic OR historical OR vintage OR archival) AND (city OR streets OR skyline)',
+        'title:(New York OR London OR Paris OR Chicago OR Moscow OR Tokyo)',
+    ),
+    "ia_space": (
+        'title:(earth OR orbital OR astronaut OR ISS OR satellite)',
+        'subject:(earth OR space OR astronaut OR astronomy OR orbit)',
+        '(space OR orbit OR NASA) AND (timelapse OR earth OR footage)',
+    ),
+    "ia_timelapse": (
+        'title:(timelapse OR time-lapse OR aurora OR clouds OR sunset)',
+        'subject:(timelapse OR time-lapse OR aurora OR night-sky)',
+        '(stars OR coastline OR mountain OR city) AND (timelapse OR time-lapse)',
+    ),
+}
 SOURCE_NAMES = {
     "apple": "Apple Aerial", "nasa": "NASA", "robin": "Robin Fourcade",
     **{key: label for key, (label, _) in ARCHIVE_THEMES.items()},
@@ -76,6 +105,8 @@ CACHE_WORKERS: dict[threading.Thread, threading.Event | None] = {}
 CANCEL_EVENTS: dict[str, threading.Event] = {}
 
 CACHE_FAILED_UNTIL: dict[str, float] = {}
+# Bounded diagnostic report for the most recent Archive discovery cycle.
+ARCHIVE_SCAN_REPORT: dict[str, dict] = {}
 # This marker describes playback compatibility, not CRF or encoder settings.
 # Keep it stable so a quality update never invalidates the existing cache.
 CACHE_PROFILE = "h264-1080p30-8bit-v1"
@@ -243,6 +274,7 @@ def source_status() -> list[dict]:
                       and cfg["online_sources"].get(provider)
                       and not state.get("error") else state.get("error")),
             "last_updated": state.get("updated"),
+            "scan": state.get("scan", {}) if provider in ARCHIVE_THEMES else {},
         })
     return out
 
@@ -568,9 +600,14 @@ def _archive_resolution(file: dict, metadata: dict) -> tuple[int, int] | None:
     if not width or not height:
         width = dimension(metadata.get("source_pixel_width"))
         height = dimension(metadata.get("source_pixel_height"))
-    if width >= 1920 and height >= 1080 and 1.74 <= width / height <= 1.82:
+    if _archive_hd_widescreen(width, height):
         return width, height
     return None
+
+
+def _archive_hd_widescreen(width: int, height: int) -> bool:
+    """Real video dimensions must be at least Full HD and genuinely 16:9."""
+    return width >= 1920 and height >= 1080 and 1.74 <= width / height <= 1.82
 
 
 def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
@@ -587,7 +624,7 @@ def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
     if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", identifier):
         return None
     options = []
-    for file in payload.get("files", [])[:150]:
+    for file in payload.get("files", [])[:250]:
         if not isinstance(file, dict):
             continue
         name = file.get("name")
@@ -599,7 +636,14 @@ def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
         if file.get("private") == "true":
             continue
         resolution = _archive_resolution(file, metadata)
-        if not resolution:
+        # A missing width/height is not evidence that a file is 480p.
+        # Propose it with an explicit unknown-quality label; the downloaded
+        # bytes MUST pass ffprobe before they can enter the playable cache.
+        known_size = (file.get("width") or file.get("source_pixel_width")
+                      or metadata.get("source_pixel_width"))
+        known_height = (file.get("height") or file.get("source_pixel_height")
+                        or metadata.get("source_pixel_height"))
+        if resolution is None and known_size and known_height:
             continue
         try:
             size = int(file.get("size") or 0)
@@ -608,19 +652,22 @@ def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
             continue
         if size < 1024 or size > 8 * 1024**3:
             continue
-        if duration and not 30 <= duration <= 600:
+        if duration and not 20 <= duration <= 1800:
             continue
         url = ("https://archive.org/download/" + identifier + "/" +
                urllib.parse.quote(name, safe="/"))
         if not allowed_video_url(url, provider):
             continue
-        # Prefer 1080p MP4, then higher resolution and MOV.
-        options.append((abs(resolution[1] - 1080),
+        # Prefer known 1080p quality; unknown remains a review candidate.
+        options.append((resolution is None,
+                        abs(resolution[1] - 1080) if resolution else 9999,
                         not name.lower().endswith(".mp4"),
                         size, url, resolution, duration))
     if not options:
         return None
-    _, _, size, url, (width, height), duration = min(options)
+    _, _, _, size, url, resolution, duration = min(options)
+    quality = f"{resolution[0]}×{resolution[1]}" if resolution else "Неизвестно"
+    quality_verified = resolution is not None
     title = _description(doc.get("title"), metadata.get("title"), identifier)
     description = _description(metadata.get("description"),
                                doc.get("description"))
@@ -635,7 +682,8 @@ def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
     if clip:
         clip.update({"name_en": title, "description_en": description,
                      "subject": _description(subject), "year": year,
-                     "license": license_url, "quality": f"{width}×{height}",
+                     "license": license_url, "quality": quality,
+                     "quality_verified": quality_verified,
                      "duration": round(duration) if duration else None,
                      "size_hint": size,
                      "thumbnail": "https://archive.org/services/img/" + identifier})
@@ -643,30 +691,61 @@ def _archive_candidate(provider: str, doc: dict, payload: dict) -> dict | None:
 
 
 def _archive_theme(provider: str) -> list[dict]:
-    """Bounded topical search; only metadata-declared HD widescreen media pass.
+    """Discover broad but bounded topical proposals without downloading media.
 
-    The candidate list is a human-moderated proposal, not an auto-download.
+    Rotate search pages and rankings after each successful refresh. Preserve
+    existing catalog entries in refresh_catalog, so discovery accumulates.
     """
-    theme = ARCHIVE_THEMES[provider][1]
-    params = urllib.parse.urlencode({
-        "q": "mediatype:movies AND " + theme,
-        "rows": 36, "page": 1, "output": "json",
-        "sort[]": "downloads desc",
-    })
-    # Repeated fl[] fields are understood by advancedsearch.php.
-    params += "".join("&fl%5B%5D=" + urllib.parse.quote(field)
-                      for field in ("identifier", "title", "creator", "description",
-                                    "subject", "licenseurl", "year"))
-    found = _http_json("https://archive.org/advancedsearch.php?" + params, timeout=18)
-    docs = found.get("response", {}).get("docs", []) if isinstance(found, dict) else []
-    if not isinstance(docs, list):
-        raise ValueError("Internet Archive: invalid search response")
+    catalog = read_json(CATALOG_FILE).get("sources", {})
+    previous = catalog.get(provider, {}) if isinstance(catalog, dict) else {}
+    cursor = previous.get("scan_cursor", 0) if isinstance(previous, dict) else 0
+    cursor = cursor if type(cursor) is int and 0 <= cursor < 10000 else 0
+    page = cursor % 5 + 1
+    ranking = ("downloads desc" if cursor // 5 % 2 == 0
+               else "publicdate desc")
+    seen: set[str] = set()
+    docs: list[dict] = []
+    successful_searches = 0
+    errors = []
+    for query in ARCHIVE_SEARCHES[provider]:
+        params = urllib.parse.urlencode([
+            ("q", "mediatype:movies AND (" + query + ")"),
+            ("rows", "35"), ("page", str(page)), ("output", "json"),
+            ("sort[]", ranking),
+            ("fl[]", "identifier"), ("fl[]", "title"),
+            ("fl[]", "licenseurl"), ("fl[]", "year"),
+            ("fl[]", "creator"), ("fl[]", "subject"),
+        ])
+        try:
+            found = _http_json(
+                "https://archive.org/advancedsearch.php?" + params, timeout=18)
+            response = found.get("response", {}) if isinstance(found, dict) else {}
+            current = response.get("docs", []) if isinstance(response, dict) else []
+            if not isinstance(current, list):
+                raise ValueError("Internet Archive: invalid search response")
+            successful_searches += 1
+            for doc in current:
+                if not isinstance(doc, dict):
+                    continue
+                identifier = doc.get("identifier")
+                if (not isinstance(identifier, str)
+                        or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", identifier)
+                        or identifier in seen):
+                    continue
+                seen.add(identifier)
+                docs.append(doc)
+                if len(docs) >= 84:
+                    break
+        except Exception as exc:
+            errors.append(str(exc)[:120])
+            print(f"[online] archive search {provider}: {exc}", flush=True)
+    if not successful_searches:
+        raise ValueError("Internet Archive: все поисковые запросы недоступны: " +
+                         "; ".join(errors[:2]))
     results: list[dict] = []
-    # Metadata calls are read-only, limited and run in parallel to bound latency.
+    failed_metadata = 0
     def resolve(doc):
-        ident = doc.get("identifier", "") if isinstance(doc, dict) else ""
-        if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", ident):
-            return None
+        ident = doc["identifier"]
         try:
             metadata = _http_json("https://archive.org/metadata/" + ident, timeout=10)
             return _archive_candidate(provider, doc, metadata)
@@ -675,11 +754,21 @@ def _archive_theme(provider: str) -> list[dict]:
             return None
 
     with ThreadPoolExecutor(max_workers=3) as pool:
-        for clip in pool.map(resolve, docs[:24]):
+        for clip in pool.map(resolve, docs):
             if clip:
                 results.append(clip)
-    # An empty new page is normal, especially with strict 1080p/16:9 filtering.
-    return results[:24]
+    ARCHIVE_SCAN_REPORT[provider] = {
+        "scanned": len(docs),
+        "accepted": len(results),
+        "unverified": sum(clip["quality_verified"] is False for clip in results),
+        "queries": successful_searches,
+        "page": page, "next_cursor": cursor + 1,
+    }
+    print(f"[online] archive {provider}: checked={len(docs)}, "
+          f"proposals={len(results)}, unverified="
+          f"{ARCHIVE_SCAN_REPORT[provider]['unverified']}, page={page}",
+          flush=True)
+    return results
 
 
 FETCHERS = {
@@ -729,6 +818,11 @@ def refresh_catalog(force=False, stop: threading.Event | None = None) -> None:
                 keep = [item for item in combined.values() if item["id"] in selected]
                 remaining = [item for item in combined.values() if item["id"] not in selected]
                 state["items"] = (keep + remaining[-350:])
+                report = ARCHIVE_SCAN_REPORT.get(name, {})
+                if report:
+                    state["scan_cursor"] = report["next_cursor"]
+                    state["scan"] = {key: value for key, value in report.items()
+                                     if key != "next_cursor"}
         except Exception as exc:
             state["attempted"] = attempted
             state["error"] = str(exc)[:180]
@@ -959,6 +1053,17 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                         video_progress.download("online", ident, total, length or None)
                 if total < 1024:
                     raise ValueError("Пустой видеоролик")
+                # Metadata is incomplete for many Archive items. Real video
+                # dimensions are the final, non-negotiable admission gate.
+                if provider in ARCHIVE_THEMES:
+                    from .video_conversion import probe_video
+                    actual = probe_video(temp)
+                    width = int(actual.get("width") or 0)
+                    height = int(actual.get("height") or 0)
+                    if not _archive_hd_widescreen(width, height):
+                        raise ValueError(
+                            f"Internet Archive: неподходящее качество "
+                            f"{width}×{height}; нужно не ниже 1080p и 16:9")
                 with temp.open("rb") as f:
                     header = f.read(12)
                 if header[4:8] != b"ftyp":
