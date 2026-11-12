@@ -46,6 +46,7 @@ DEFAULTS = {
     },
     'online_cache_enabled': True,
     'online_autodownload_enabled': True,
+    'online_refresh_interval_minutes': 60,
     'online_cache_gb': 12,
 }
 
@@ -140,6 +141,9 @@ def update_settings(new: dict) -> dict:
     interval = result['auto_update_interval_minutes']
     if type(interval) is not int or interval < 1:
         raise ValueError('Интервал автообновления должен быть целым числом минут не меньше 1')
+    refresh_interval = result['online_refresh_interval_minutes']
+    if type(refresh_interval) is not int or refresh_interval < 1:
+        raise ValueError('Интервал проверки видеоисточников должен быть целым числом минут не меньше 1')
     if result['clock_position'] not in ('bottom-left', 'bottom-center', 'center', 'top-right'):
         raise ValueError('Неверное расположение часов')
     if str(result['time_format']) not in ('12', '24'):
