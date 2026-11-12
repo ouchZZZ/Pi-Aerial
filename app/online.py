@@ -105,6 +105,7 @@ CACHE_WORKERS: dict[threading.Thread, threading.Event | None] = {}
 CANCEL_EVENTS: dict[str, threading.Event] = {}
 
 CACHE_FAILED_UNTIL: dict[str, float] = {}
+CACHE_FAILED_REASONS: dict[str, str] = {}
 # Bounded diagnostic report for the most recent Archive discovery cycle.
 ARCHIVE_SCAN_REPORT: dict[str, dict] = {}
 # This marker describes playback compatibility, not CRF or encoder settings.
@@ -996,6 +997,37 @@ def cache_status() -> dict:
     }
 
 
+def _download_failure_message(exc: Exception) -> str:
+    """A short, safe diagnosis for the admin UI, without leaking download URLs."""
+    if isinstance(exc, urllib.error.HTTPError):
+        code = exc.code
+        if code in (401, 403):
+            return f"HTTP {code}: доступ к файлу запрещён сервером"
+        if code == 404:
+            return "HTTP 404: файл удалён или недоступен на сервере"
+        if code == 429:
+            return "HTTP 429: Internet Archive ограничил частоту запросов"
+        if code in (500, 502, 503, 504):
+            return f"HTTP {code}: сервер временно недоступен"
+        return f"HTTP {code}: ошибка загрузки"
+    if isinstance(exc, urllib.error.URLError):
+        reason = str(getattr(exc, "reason", "")).lower()
+        if "timed out" in reason or "timeout" in reason:
+            return "Превышено время ожидания ответа видеосервера"
+        if "certificate" in reason or "ssl" in reason:
+            return "Ошибка проверки HTTPS-соединения"
+        return "Не удалось подключиться к серверу видео"
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return "Потеряно соединение с видеосервером"
+    if isinstance(exc, ValueError):
+        message = str(exc)
+        # ValueError is raised only with trusted, local diagnostic wording;
+        # any URL inside third-party exception text still must be stripped.
+        message = re.sub(r"https?://[^\\s]+", "[адрес скрыт]", message)
+        return message[:180] or "Недопустимый видеофайл"
+    return "Ошибка подготовки: " + type(exc).__name__
+
+
 class _CombinedStop:
     """A per-video cancellation and the owning application lifespan stop."""
     def __init__(self, parent, own):
@@ -1105,6 +1137,7 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                     online_library.remember(ident, entry)
                 print(f"[online] ready {provider}: {ident} "
                       f"({mode}, {final.stat().st_size // 1024 // 1024} МБ)", flush=True)
+                CACHE_FAILED_REASONS.pop(ident, None)
                 video_progress.finish("online", ident, True)
             finally:
                 temp.unlink(missing_ok=True)
@@ -1113,10 +1146,14 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
             # Shutdown is not a failed video; the next start may retry it.
             video_progress.finish("online", ident, False, "Загрузка остановлена")
         except Exception as exc:
+            message = _download_failure_message(exc)
             with LOCK:
                 CACHE_FAILED_UNTIL[ident] = time.time() + 3600
-            video_progress.finish("online", ident, False, "Ошибка загрузки или обработки")
-            print(f"[online] cannot cache {ident}: {exc}", flush=True)
+                CACHE_FAILED_REASONS[ident] = message
+            video_progress.finish("online", ident, False, message)
+            print(f"[online] cannot cache {entry.get('provider', '')}: "
+                  f"{entry.get('name', '')[:85]} ({ident}): {message}; "
+                  f"details={exc}", flush=True)
         finally:
             with LOCK:
                 ACTIVE.discard(ident)
@@ -1140,7 +1177,6 @@ def try_cache(entry: dict, stop: threading.Event | None = None) -> bool:
         if (not online_library.is_selected(ident)
                 or (stop is not None and stop.is_set())
                 or ident in ACTIVE or cached_file(ident) is not None
-                or ident in _processed_ids()
                 or CACHE_FAILED_UNTIL.get(ident, 0) > time.time()):
             return False
         slot = DOWNLOAD_SLOT
