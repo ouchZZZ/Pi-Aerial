@@ -252,8 +252,9 @@ function activeLibrarySources(){
   const sources=(status?.online_sources||[])
     .filter(source=>source&&typeof source.id==='string'&&enabled[source.id]===true)
     .map(source=>({id:source.id,name:source.name||source.id}));
-  if(status?.config?.local_videos_enabled!==false)
-    sources.push({id:'local',name:'Загруженные файлы'});
+  // Local uploads remain available for manual preview and one-shot playback
+  // even when the automatic screensaver rotation is disabled.
+  sources.push({id:'local',name:'Загруженные файлы'});
   return sources;
 }
 function libraryMatches(item){
