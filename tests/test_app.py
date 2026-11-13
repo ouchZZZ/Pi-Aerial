@@ -237,6 +237,20 @@ def test_local_source_toggle_preserves_uploaded_files(monkeypatch):
             assert any(item['name'] == name
                        for item in client.get('/api/admin/status').json()['videos'])
             assert video.exists()
+            # Disabled rotation must not block the administrator's one-time show.
+            assert client.get('/media/' + name).status_code == 200
+            request = client.post('/api/admin/display/play-once/local/' + name,
+                                  headers=csrf)
+            assert request.status_code == 200, request.text
+            command = client.get('/api/display/play-once').json()
+            assert command['url'].startswith('/api/display/play-once/')
+            shown = client.get(command['url'])
+            assert shown.status_code == 200
+            assert shown.content == video.read_bytes()
+            assert not any(item['name'] == name
+                           for item in client.get('/api/public').json()['videos'])
+            assert client.post('/api/admin/display/play-once/stop',
+                               headers=csrf).status_code == 200
             response = client.put('/api/admin/config',
                                   json={'changes': {'local_videos_enabled': True}},
                                   headers=csrf)
