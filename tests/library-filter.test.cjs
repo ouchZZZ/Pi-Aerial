@@ -64,7 +64,7 @@ function harness(){
       );
       row.append(head);return row;
     },
-    openLibraryPreview(){},playOnceButton:()=>makeNode('button'),
+    openLibraryPreview(){},playOnceButton:(source,name)=>Object.assign(makeNode('button'),{textContent:'Показать один раз без OSD',source,name}),
     ask:()=>false,api:async()=>({}),toast(){},load:async()=>{},loadLibrary:async()=>{},
   };
   const api=vm.runInNewContext(librarySource+'\n({renderLibrary,libraryMatches,filteredLibrary})',context);
@@ -117,14 +117,20 @@ test('library filter controls exist and can select a single source, two sources 
   assert.equal(ui.byId('librarySourceFilters').children[0].disabled,true);
 });
 
-test('only enabled sources appear and switching settings reconciles selection',()=>{
+test('local uploads stay available for one-shot playback when screensaver rotation is off',()=>{
   const ui=harness();
   ui.status.config.online_sources.robin=false;
   ui.status.config.local_videos_enabled=false;
   ui.api.renderLibrary(ui.videos);
-  assert.equal(ui.labels().length,2);
+  assert.equal(ui.labels().length,3);
   assert.deepEqual(ui.names('onlineLibraryList'),['Ocean','Earth','Deleted Earth']);
-  assert.equal(ui.byId('localLibraryCard').hidden,true);
+  assert.equal(ui.byId('localLibraryCard').hidden,false);
+  assert.deepEqual(ui.names('localLibraryList'),['My local video']);
+  const localControls=ui.byId('localLibraryList').children[0].children.at(-1);
+  const oneShot=localControls.children.find(child=>child.textContent==='Показать один раз без OSD');
+  assert.ok(oneShot,'manual playback button must exist while rotation is disabled');
+  assert.equal(oneShot.source,'local');
+  assert.equal(oneShot.name,'My local video');
   const nasa=ui.choice('NASA');
   nasa.checked=false;nasa.dispatch('change');
   assert.deepEqual(ui.names('onlineLibraryList'),['Ocean']);
@@ -139,7 +145,7 @@ test('only enabled sources appear and switching settings reconciles selection',(
 
   ui.status.config.online_sources.apple=false;
   ui.api.renderLibrary(ui.videos);
-  assert.equal(ui.labels().length,2);
+  assert.equal(ui.labels().length,3);
   assert.deepEqual(ui.names('onlineLibraryList'),['Alps']);
   assert.equal(ui.byId('onlineLibraryCard').hidden,false);
 });
@@ -158,9 +164,13 @@ test('empty selection and no enabled source show guidance without erasing files'
   ui.status.config.online_sources={apple:false,nasa:false,robin:false};
   ui.status.config.local_videos_enabled=false;
   ui.api.renderLibrary(ui.videos);
-  assert.equal(ui.labels().length,0);
-  assert.match(ui.byId('libraryFilterHint').textContent,/Нет включённых источников/);
+  assert.equal(ui.labels().length,1);
+  assert.match(ui.byId('libraryFilterHint').textContent,/Выберите хотя бы один источник/);
   assert.equal(ui.videos.length,4);
+  const local=ui.choice('Загруженные файлы');
+  local.checked=true;local.dispatch('change');
+  assert.equal(ui.byId('localLibraryCard').hidden,false);
+  assert.deepEqual(ui.names('localLibraryList'),['My local video']);
 });
 
 test('failed selected video keeps a visible retry action',()=>{
