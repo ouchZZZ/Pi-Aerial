@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress, osd_fonts, update_control, video_sources
+from . import auth, bundles, weather, github_updates, online, online_library, local_videos, video_progress, osd_fonts, update_control, video_sources, kiosk
 from .storage import (BASE, CURRENT_VERSION, CURRENT_REVISION, DATA, WEB, LOCK, atomic_json, init_data,
                       read_json, safe_id, settings, update_settings)
 
@@ -38,6 +38,13 @@ DISPLAY_PLAYBACK_STATUS: dict[str, object] = {}
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # A core update does not replace the stable kiosk.sh. Migrate it once.
+    # The running Chromium process gets the new flag at the next kiosk launch.
+    try:
+        if kiosk.enable_software_video_decode(BASE / 'kiosk.sh'):
+            print('[kiosk] Chromium software video decoding configured; restart kiosk to apply.', flush=True)
+    except OSError as exc:
+        print(f'[kiosk] Cannot migrate launcher: {exc}', flush=True)
     # One-time, durable migration runs before any fresh source discovery.
     online_library.reset_archive_catalog_once()
     # A fresh event for each lifespan never reactivates prior TestClient workers.
