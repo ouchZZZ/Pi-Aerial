@@ -112,11 +112,17 @@ cat > "$BASE/kiosk.sh" <<'KIOSK'
 #!/usr/bin/env bash
 set -u
 command -v chromium >/dev/null && BROWSER=chromium || BROWSER=chromium-browser
+# PI_AERIAL_SOFTWARE_VIDEO_DECODE_V1
+# Touch data/allow-hardware-video-decode and restart kiosk to opt back in.
+VIDEO_DECODE_FLAGS=()
+if [[ ! -e "$(dirname -- "${BASH_SOURCE[0]}")/data/allow-hardware-video-decode" ]]; then
+  VIDEO_DECODE_FLAGS=(--disable-accelerated-video-decode)
+fi
 while true; do
   "$BROWSER" --kiosk --incognito --noerrdialogs --no-first-run --disable-infobars \
     --disable-session-crashed-bubble --disable-features=TranslateUI \
     --deny-permission-prompts --autoplay-policy=no-user-gesture-required --password-store=basic \
-    http://127.0.0.1:8080
+    "${VIDEO_DECODE_FLAGS[@]}" http://127.0.0.1:8080
   sleep 4
 done
 KIOSK
