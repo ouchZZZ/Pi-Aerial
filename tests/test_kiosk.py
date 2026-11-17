@@ -1,6 +1,4 @@
 """Regressions for Pi 4 Chromium video-decoder workaround."""
-import os
-import stat
 import subprocess
 from pathlib import Path
 
