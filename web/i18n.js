@@ -114,6 +114,7 @@
     ['Источники','Sources'],
     ['Автозагрузка онлайн-роликов','Automatically download online videos'],
     ['При выключении текущий ролик докачается и перекодируется. Готовые ролики останутся доступны для показа.','When disabled, the current download and conversion finish. Prepared videos remain available.'],
+    ['Apple Aerial — дополнения','Apple Aerial — Extras'],
     ['Включайте и выключайте источники независимо. «Загруженные файлы» не затрагивают онлайн-кеш. Apple Aerial (tvOS 26), NASA и Robin Fourcade не требуют ключей. Онлайн-ролики загружаются по одному, в приоритете 1080p, при необходимости видео преобразуется в совместимый H.264 MP4.','Enable sources independently. Uploaded files do not affect the online cache. Apple Aerial (tvOS 26), NASA and Robin Fourcade need no API keys. Online videos are processed one at a time, prioritizing 1080p, converting to compatible H.264 MP4 when needed.'],
     ['Повторить проверку источников','Refresh source catalogs'],
     ['Кеш подготовленных видео','Prepared video cache'],
