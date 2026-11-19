@@ -32,7 +32,7 @@ import certifi
 
 from .storage import DATA, atomic_json, read_json, settings, max_online_cache_gb
 from .video_conversion import normalize_video
-from . import video_progress
+from . import apple_extras, video_progress
 
 ARCHIVE_THEMES = {
     "ia_nature": ("Internet Archive · Природа",
@@ -81,7 +81,8 @@ ARCHIVE_SEARCHES = {
     ),
 }
 SOURCE_NAMES = {
-    "apple": "Apple Aerial", "nasa": "NASA", "robin": "Robin Fourcade",
+    "apple": "Apple Aerial", "apple_extras": "Apple Aerial — дополнения",
+    "nasa": "NASA", "robin": "Robin Fourcade",
     **{key: label for key, (label, _) in ARCHIVE_THEMES.items()},
 }
 SOURCE_URLS = {
@@ -96,7 +97,7 @@ PROCESSED_FILE = DATA / "online_processed.json"
 SCHEDULER_FILE = DATA / "online_scheduler.json"
 CACHE_FOLDER = DATA / "online_cache"
 # Round-robin order; the next turn survives application restarts.
-SOURCE_ORDER = ("robin", "apple", "nasa", *ARCHIVE_THEMES)
+SOURCE_ORDER = ("robin", "apple", "nasa", *ARCHIVE_THEMES, "apple_extras")
 DEFAULT_REFRESH_MINUTES = 60
 MIN_ARCHIVE_SECONDS = 60
 MAX_ARCHIVE_SECONDS = 1800
@@ -162,6 +163,7 @@ def allowed_video_url(url: str, provider: str) -> bool:
             return False
         suffix = {
             "apple": ("apple.com", "mzstatic.com"),
+            "apple_extras": ("sylvan.apple.com",),
             "nasa": ("nasa.gov",),
         }.get(provider, ())
         if provider in ARCHIVE_THEMES:
@@ -500,6 +502,17 @@ def _apple() -> list[dict]:
                 clip['captions'] = captions
             result.append(clip)
     return result[:250]
+
+
+def _apple_extras() -> list[dict]:
+    result = []
+    for source_id, title, name_en, url in apple_extras.CLIPS:
+        clip = _clip("apple_extras", source_id, url, title,
+                     "Apple Aerial", "https://www.apple.com/apple-tv-4k/")
+        if clip:
+            clip["name_en"] = name_en
+            result.append(clip)
+    return result
 
 
 def _nasa_metadata_score(entry: dict) -> int:
@@ -1016,7 +1029,7 @@ def _archive_theme(provider: str) -> list[dict]:
 
 
 FETCHERS = {
-    "apple": _apple, "nasa": _nasa, "robin": _robin,
+    "apple": _apple, "apple_extras": _apple_extras, "nasa": _nasa, "robin": _robin,
     **{provider: (lambda provider=provider: _archive_theme(provider))
        for provider in ARCHIVE_THEMES},
 }

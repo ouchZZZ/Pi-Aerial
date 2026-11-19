@@ -668,7 +668,7 @@ def test_old_settings_gain_robin_source_without_losing_choices(monkeypatch, tmp_
                         {"online_sources": {"apple": False, "nasa": True}})
     cfg = storage.settings()
     assert cfg["online_sources"] == {
-        "apple": False, "nasa": True, "robin": True,
+        "apple": False, "apple_extras": True, "nasa": True, "robin": True,
         **{name: False for name in online.ARCHIVE_THEMES},
     }
     storage.update_settings({"online_sources": {

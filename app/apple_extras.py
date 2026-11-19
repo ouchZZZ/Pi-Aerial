@@ -1,0 +1,31 @@
+"""Apple Aerial scenes outside the tvOS catalog. Only metadata is bundled."""
+
+# IDs and media URLs from AerialWindows/Aerial at d9e379d4742e7fd3383da7f994c6fc6abc96fa2a.
+CLIPS = (
+    ("cb5b5035-6701-619f-9065-3d7d0e5fbef4-113", "Озеро в Исландии", "Iceland — Lake",
+     "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/I003_C005_UHD_SDR_240fps_10d589e5-2709-4c6d-8ae0-a3e0e1e1cb37q18_sRGB_tsa.mov"),
+    ("cb5b5035-6701-619f-9065-3d7d0e5fbef4-144", "Секвойя на рассвете", "Sequoia — Sunrise",
+     "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/A007C0001_Final_v2_HEVC.mov"),
+    ("cb5b5035-6701-619f-9065-3d7d0e5fbef4-145", "Секвойя утром", "Sequoia — Morning",
+     "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/A010C0005_Final_v2_HEVC.mov"),
+    ("cb5b5035-6701-619f-9065-3d7d0e5fbef4-146", "Секвойя ночью", "Sequoia — Night",
+     "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/A018C0002_Final_v2_HEVC.mov"),
+    ("ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f-125", "Облака над Сономой", "Sonoma — Sonoma Clouds",
+     "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/S011_C003_F01_FRC240fps_sdr_4k_qp18_240p_t2160_grover401_tsa.mov"),
+    ("ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f-126", "Вечер над Сономой", "Sonoma — Evening",
+     "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/S013_C001_F01_FRC240fps_sdr_4k_qp20_240p_t2160_tsa.mov"),
+    ("ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f-127", "Горизонт в Сономе", "Sonoma — Horizon",
+     "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/W010_C003_F01_third_sdr_4k_qp24_15Mbps_240p_t2160_tsa.mov"),
+    ("ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f-128", "Река в Сономе", "Sonoma — Sonoma River",
+     "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/S005_C013_F01_FRC240fps_sdr_4k_qp18_240p_t2160_tsa.mov"),
+    ("ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f-129", "Вид сверху на Соному", "Sonoma — Sonoma from Above",
+     "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/S009_C018_F01_FRC240fps_sdr_4k_qp18_240p_t2160_tsa.mov"),
+    ("cb5b5035-6701-619f-9065-3d7d0e5fbef4-147", "Тахо утром", "Tahoe — Morning",
+     "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/LIGHT01_20250623_V3_sdr_4k_rate12000_240p_t2160_grover74_tsa_nclc111.mov"),
+    ("cb5b5035-6701-619f-9065-3d7d0e5fbef4-148", "Тахо днем", "Tahoe — Day",
+     "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/LIGHT02_20250613_V2_sdr_4k_rate12000_240p_t2160_grover74_tsa_MTE-Modified.mov"),
+    ("cb5b5035-6701-619f-9065-3d7d0e5fbef4-149", "Тахо вечером", "Tahoe — Evening",
+     "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/DARK01_20250703_v10_sdr_4k_rate12000_240p_t2160_grover74_tsa_nclc111.mov"),
+    ("cb5b5035-6701-619f-9065-3d7d0e5fbef4-150", "Тахо ночью", "Tahoe — Night",
+     "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/DARK02_20250719_V1_FRC_240fps_sdr_4k_rate12000_240p_t2160_grover74_tsa_nclc111.mov"),
+)

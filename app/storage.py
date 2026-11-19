@@ -40,7 +40,7 @@ DEFAULTS = {
     'auto_update_enabled': False,
     'auto_update_interval_minutes': 60,
     'online_sources': {
-        'apple': True, 'nasa': True, 'robin': True,
+        'apple': True, 'apple_extras': True, 'nasa': True, 'robin': True,
         'ia_nature': False, 'ia_cities': False, 'ia_history': False,
         'ia_space': False, 'ia_timelapse': False,
     },
