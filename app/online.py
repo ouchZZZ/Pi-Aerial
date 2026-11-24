@@ -1154,6 +1154,8 @@ def _refresh_catalog_inner(force=False, stop: threading.Event | None = None) -> 
             state = {"updated": time.time(), "attempted": attempted,
                      "items": clips, "error": None,
                      "feed": {"apple": "tvos26", "nasa": "nasa", "robin": "aerialshots"}.get(name, name)}
+            if name == "apple_extras" and sources.get(name, {}).get("feed") == "apple-unified-v1":
+                state["feed"] = "apple-unified-v1"
             if name == "nasa":
                 # A rotating NASA search must not lose existing selections.
                 from . import online_library
