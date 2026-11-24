@@ -1051,7 +1051,36 @@ def _refresh_apple_inventory(sources, attempted, stop=None):
         rows, upgrades, conflicts = apple_reconcile.reconcile(
             report["items"], existing, _apple_extras(), allowed_video_url)
         # Migrate existing ready markers before any file is removed.
-        online_library.selected_ids()
+        selected = online_library.selected_ids()
+        # Migrate selections/blacklists for aliases that no longer have a
+        # catalog row. An exclusion always takes precedence over selection.
+        published = {r["id"] for r in existing}
+        excluded = online_library._excluded_state()
+        selection_changed = exclusion_changed = False
+        for row in rows:
+            ident = row["id"]
+            aliases = set(row.get("apple_alias_ids", [])) - published - {ident}
+            blocked = sorted(aliases & set(excluded))
+            chosen = aliases & selected
+            if blocked:
+                excluded.setdefault(ident, {"id": ident, **online_library._metadata(row)})
+                for alias in blocked:
+                    excluded.pop(alias, None)
+                exclusion_changed = True
+            if chosen or (ident in excluded and ident in selected):
+                selected.difference_update(chosen)
+                if ident in excluded:
+                    selected.discard(ident)
+                    event = CANCEL_EVENTS.get(ident)
+                    if event is not None:
+                        event.set()
+                elif chosen:
+                    selected.add(ident)
+                selection_changed = True
+        if exclusion_changed:
+            atomic_json(online_library.EXCLUDED_FILE, {"version": 1, "entries": excluded})
+        if selection_changed:
+            atomic_json(online_library.SELECTION_FILE, {"version": 1, "ids": sorted(selected)})
         history = read_json(PROCESSED_FILE)
         completed = set(history.get("ids", []))
         applied = 0
@@ -1078,7 +1107,8 @@ def _refresh_apple_inventory(sources, attempted, stop=None):
             history["ids"] = sorted(completed)
             atomic_json(PROCESSED_FILE, history)
         stats = {"catalogs": len(report["counts"]),
-                 "counts": report["counts"], "records": report["records"],
+                 "counts": report["counts"], "raw_counts": report.get("raw_counts", {}),
+                 "skipped": report.get("skipped", {}), "records": report["records"],
                  "unique": len(rows), "merged": report["merged"],
                  "errors": report["errors"], "conflicts": conflicts,
                  "upgrades": applied,
