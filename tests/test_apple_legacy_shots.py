@@ -2,7 +2,7 @@
 import pytest
 
 from app import apple_catalog, apple_reconcile, online, online_library
-from tests.test_apple_reconcile import setup_refresh
+from test_apple_reconcile import setup_refresh
 
 BASE = "https://sylvan.apple.com/Videos/"
 CASES = [
