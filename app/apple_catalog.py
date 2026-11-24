@@ -243,6 +243,27 @@ def normalize(raw, translations, source):
         }
 
 
+# Legacy tvOS 11 filenames omit shotID and use resolution before SDR/HDR.
+# Limit inference to the full, region-qualified production code, not generic
+# A001_C001 names shared by unrelated productions.
+def filename_shot(url):
+    if not media_url(url):
+        return None
+    stem = PurePosixPath(urllib.parse.unquote(urllib.parse.urlsplit(url).path)).stem
+    match = re.match(r"^(?:comp_)?([A-Z]{2}_[A-Z]\d{3}_C\d{3})(?:_|$)", stem, re.I)
+    return match.group(1).casefold() if match else None
+
+
+def scene_codes(record):
+    explicit = {x.casefold() for x in record.get("shot_ids", []) if isinstance(x, str)}
+    inferred = {code for url in record["versions"] if (code := filename_shot(url))}
+    # Never erase an explicit edit/variant identifier or connect inconsistent
+    # filenames. Only infer when every recognized filename agrees.
+    if not explicit and len(inferred) == 1:
+        return inferred
+    return explicit
+
+
 def _identity_keys(record):
     # IDs and complete media URLs are strong evidence. Do NOT merge by place,
     # title, approximate filename, duration or resolution alone.
@@ -254,7 +275,7 @@ def _identity_keys(record):
         match = re.fullmatch(r"(.+?)_(?:sdr|hdr)_(?:2k|4k)_(?:avc|hevc)", stem)
         if match and re.search(r"[a-z]\d{3}_c\d{3}", match.group(1)):
             names.add(("master", match.group(1)))
-    return (names | {("shot", x.casefold()) for x in record.get("shot_ids", [])} |
+    return (names | {("shot", x) for x in scene_codes(record)} |
             {("id", x.casefold()) for x in record["apple_ids"]} |
             {("url", urllib.parse.urlsplit(u).netloc.lower() +
               urllib.parse.urlsplit(u).path) for u in record["versions"]})

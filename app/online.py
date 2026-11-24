@@ -1046,15 +1046,32 @@ def _refresh_apple_inventory(sources, attempted, stop=None):
                     if isinstance(row, dict) and isinstance(row.get("id"), str)
                     and re.fullmatch(r"[0-9a-f]{24}", row["id"])
                     and allowed_video_url(row.get("remote_url"), provider)]
+        # Never retire a legacy alias with downloaded media or in-flight work.
+        # A later refresh can safely consolidate it once no file is present.
+        def protected(ident):
+            return (ident in ACTIVE or online_library._one_shot_using(ident)
+                    or any(os.path.lexists(CACHE_FOLDER / (ident + suffix))
+                           for suffix in (".mp4", ".ready", ".part", ".mux.mp4")))
+
+        retired = apple_reconcile.legacy_aliases(report["items"], existing, protected)
+        kept = [row for row in existing if row["id"] not in retired]
         # The bundled additions preserve previously published IDs even on a
         # fresh installation. Keep both provider keys for existing settings.
         rows, upgrades, conflicts = apple_reconcile.reconcile(
-            report["items"], existing, _apple_extras(), allowed_video_url)
+            report["items"], kept, _apple_extras(), allowed_video_url)
+        # Only finalize retirement if the target survived reconciliation and
+        # carries the old alias. Otherwise leave all published rows untouched.
+        by_id = {row["id"]: row for row in rows}
+        retired = {alias: target for alias, target in retired.items()
+                   if target in by_id and alias in by_id[target].get("apple_alias_ids", [])}
+        for row in existing:
+            if row["id"] not in by_id and row["id"] not in retired:
+                rows.append(row)
         # Migrate existing ready markers before any file is removed.
         selected = online_library.selected_ids()
         # Migrate selections/blacklists for aliases that no longer have a
         # catalog row. An exclusion always takes precedence over selection.
-        published = {r["id"] for r in existing}
+        published = {r["id"] for r in existing} - set(retired)
         excluded = online_library._excluded_state()
         selection_changed = exclusion_changed = False
         for row in rows:
@@ -1083,6 +1100,15 @@ def _refresh_apple_inventory(sources, attempted, stop=None):
             atomic_json(online_library.SELECTION_FILE, {"version": 1, "ids": sorted(selected)})
         history = read_json(PROCESSED_FILE)
         completed = set(history.get("ids", []))
+        details = history.get("details", {})
+        if isinstance(details, dict):
+            for alias in retired:
+                details.pop(alias, None)
+            history["details"] = details
+        completed.difference_update(retired)
+        for alias in retired:
+            CACHE_FAILED_UNTIL.pop(alias, None)
+            CACHE_FAILED_REASONS.pop(alias, None)
         applied = 0
         for row in rows:
             ident = row["id"]
@@ -1103,7 +1129,7 @@ def _refresh_apple_inventory(sources, attempted, stop=None):
             row["alternate_urls"] = list(dict.fromkeys(
                 [u for u in row["alternate_urls"] if u != better] + [old_url]))
             applied += 1
-        if applied:
+        if applied or retired:
             history["ids"] = sorted(completed)
             atomic_json(PROCESSED_FILE, history)
         stats = {"catalogs": len(report["counts"]),
@@ -1111,13 +1137,14 @@ def _refresh_apple_inventory(sources, attempted, stop=None):
                  "skipped": report.get("skipped", {}), "records": report["records"],
                  "unique": len(rows), "merged": report["merged"],
                  "errors": report["errors"], "conflicts": conflicts,
+                 "retired_legacy_duplicates": len(retired),
                  "upgrades": applied,
                  "pending_upgrades": len(upgrades) - applied,
                  "new": len({r["id"] for r in rows} - {r["id"] for r in existing})}
         updated = time.time()
         sources["apple"] = {"updated": updated, "attempted": attempted,
                             "items": [r for r in rows if r["provider"] == "apple"],
-                            "error": None, "feed": "apple-unified-v1",
+                            "error": None, "feed": "apple-unified-v2",
                             "apple_snapshots": report["snapshots"], "scan": stats}
         sources["apple_extras"] = {"updated": updated, "attempted": attempted,
                                    "items": [r for r in rows if r["provider"] == "apple_extras"],
