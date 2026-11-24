@@ -67,6 +67,21 @@ def download(url):
     return data
 
 
+def _read_strings(raw):
+    try:
+        return plistlib.loads(raw)
+    except (ValueError, OverflowError):
+        # Older tvOS bundles can contain OpenStep text instead of XML/binary.
+        text = raw.decode("utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig")
+        pairs = re.findall(r'"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)"\s*;', text)
+
+        def unescape(value):
+            value = re.sub(r"\\U([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), value)
+            return value.replace(r'\"', '"').replace(r'\n', '\n').replace(r'\\', '\\')
+
+        return {unescape(key): unescape(value) for key, value in pairs}
+
+
 def _tar_payload(data, depth=0):
     entries, translations, nested = None, {}, None
     # No filesystem extraction; bound the decompressed data and member count.
@@ -79,14 +94,16 @@ def _tar_payload(data, depth=0):
             if not member.isfile() or member.size > MAX_BYTES:
                 continue
             path = PurePosixPath(member.name)
+            if any(part.startswith("._") for part in path.parts):
+                continue
             if path.name == "entries.json":
                 entries = json.load(archive.extractfile(member))
             elif path.name == "resources.tar" and depth == 0:
                 nested = archive.extractfile(member).read()
             elif path.name in ("Localizable.nocache.strings", "Localizable.nocache.loctable"):
                 try:
-                    table = plistlib.loads(archive.extractfile(member).read())
-                except (ValueError, OverflowError):
+                    table = _read_strings(archive.extractfile(member).read())
+                except (ValueError, OverflowError, UnicodeError):
                     continue
                 if not isinstance(table, dict):
                     continue
@@ -117,7 +134,11 @@ def _plist_urls(value):
             yield from _plist_urls(child)
 
 
-def load_feed(url, fetch=download):
+def load_feed(url, fetch=download, memo=None):
+    if memo is None:
+        memo = {}
+    if url in memo:
+        return memo[url]
     data = fetch(url)
     path = urllib.parse.urlsplit(url).path
     if path.endswith(".plist"):
@@ -127,10 +148,13 @@ def load_feed(url, fetch=download):
                    else sorted(set(_plist_urls(config))))
         if len(targets) != 1:
             raise ValueError("Ambiguous Apple resource manifest")
-        return load_feed(targets[0], fetch)
-    if path.endswith(".json"):
-        return json.loads(data), {}
-    return _tar_payload(data)
+        result = load_feed(targets[0], fetch, memo)
+    elif path.endswith(".json"):
+        result = json.loads(data), {}
+    else:
+        result = _tar_payload(data)
+    memo[url] = result
+    return result
 
 
 def media_url(value):
@@ -192,7 +216,7 @@ def normalize(raw, translations, source):
             for sec, key in points.items():
                 if isinstance(key, str) and str(sec).isdigit():
                     caption = ru.get(key) or en.get(key)
-                    if isinstance(caption, str) and caption:
+                    if isinstance(caption, str) and caption and len(str(sec)) <= 6:
                         captions[str(sec)] = caption
         yield {
             "apple_ids": [ident] if ident else [],
@@ -255,11 +279,12 @@ def inventory(previous=None, fetch=download, stop=None):
     """Sequential network requests; retain the last successful feed on failure."""
     previous = previous or {}
     snapshots, errors, counts = {}, {}, {}
+    memo = {}
     for name, url in FEEDS.items():
         if stop is not None and stop.is_set():
             raise InterruptedError("Apple catalog refresh stopped")
         try:
-            raw, translations = load_feed(url, fetch)
+            raw, translations = load_feed(url, fetch, memo)
             rows = list(normalize(raw, translations, name))
             if not rows:
                 raise ValueError("No playable Apple assets")
