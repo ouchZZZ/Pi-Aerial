@@ -9,6 +9,38 @@ def clip_id(provider, source_id):
     return hashlib.sha256((provider + ":" + source_id).encode()).hexdigest()[:24]
 
 
+def legacy_aliases(groups, existing, protected):
+    """Find already-published obsolete aliases of a single modern TV scene.
+
+    Do not collapse ambiguous canonical IDs or retire a cached/in-use alias.
+    This handles the historical tvOS 11/13 duplicates without discarding
+    user media. Return alias -> canonical ID; caller migrates journals.
+    """
+    retired = {}
+    for group in groups:
+        codes = apple_catalog.scene_codes(group)
+        if len(codes) != 1 or "tvos26" not in group["sources"]:
+            continue
+        def matches(row):
+            return apple_catalog.scene_codes({
+                "shot_ids": row.get("apple_shot_ids", []),
+                "versions": {row["remote_url"]: 0, **row.get("apple_versions", {})},
+            }) == codes
+
+        candidates = [row for row in existing if matches(row)]
+        modern = [row for row in candidates if "tvos26" in row.get("apple_sources", [])]
+        if len(modern) != 1:
+            continue
+        canonical = modern[0]["id"]
+        for row in candidates:
+            ident = row["id"]
+            sources = set(row.get("apple_sources", []))
+            if (ident != canonical and sources and sources <= {"tvos11", "tvos13"}
+                    and not row.get("apple_shot_ids") and not protected(ident)):
+                retired[ident] = canonical
+    return retired
+
+
 def reconcile(groups, existing, extras, valid_url):
     """Pure reconciliation. Keep legacy IDs/providers and never discard an old row.
 
