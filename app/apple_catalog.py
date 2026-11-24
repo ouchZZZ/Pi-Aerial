@@ -8,10 +8,13 @@ import io
 import json
 import plistlib
 import re
+import ssl
 import tarfile
 import urllib.parse
 import urllib.request
 from pathlib import PurePosixPath
+
+import certifi
 
 BASE = "https://sylvan.apple.com/Aerials/"
 MAC = ("https://sylvan.apple.com/itunes-assets/Aerials126/v4/"
@@ -58,7 +61,10 @@ class AppleRedirect(urllib.request.HTTPRedirectHandler):
 def download(url):
     if not safe_url(url):
         raise ValueError("Unexpected Apple catalog URL")
-    opener = urllib.request.build_opener(AppleRedirect())
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    opener = urllib.request.build_opener(
+        AppleRedirect(), urllib.request.HTTPSHandler(context=context))
     request = urllib.request.Request(url, headers={"User-Agent": "PiAerial catalog"})
     with opener.open(request, timeout=30) as response:
         data = response.read(MAX_BYTES + 1)
