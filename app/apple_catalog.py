@@ -121,7 +121,10 @@ def load_feed(url, fetch=download):
     data = fetch(url)
     path = urllib.parse.urlsplit(url).path
     if path.endswith(".plist"):
-        targets = sorted(set(_plist_urls(plistlib.loads(data))))
+        config = plistlib.loads(data)
+        primary = config.get("resources-url") if isinstance(config, dict) else None
+        targets = ([primary] if safe_url(primary) and urllib.parse.urlsplit(primary).path.endswith(".tar")
+                   else sorted(set(_plist_urls(config))))
         if len(targets) != 1:
             raise ValueError("Ambiguous Apple resource manifest")
         return load_feed(targets[0], fetch)
