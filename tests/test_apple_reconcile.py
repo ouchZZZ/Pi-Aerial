@@ -116,3 +116,13 @@ def test_active_download_defers_upgrade(monkeypatch, tmp_path):
     assert sources["apple"]["items"][0]["remote_url"] == LOW
     assert sources["apple"]["scan"]["pending_upgrades"] == 1
     assert (tmp_path / (ident + ".mp4")).exists()
+
+
+def test_codec_preference_does_not_delete_good_existing_video():
+    for url in (BASE + "scene_SDR_4K_HEVC.mov",
+                BASE + "scene_SDR_2K_HEVC.mov", BASE + "unknown.mov"):
+        old = old_clip(url)
+        rows, upgrades, _ = apple_reconcile.reconcile(
+            [group()], [old], [], online.allowed_video_url)
+        assert not upgrades
+        assert rows[0]["remote_url"] == url
