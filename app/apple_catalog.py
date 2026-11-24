@@ -20,6 +20,7 @@ FEEDS = {
     "tvos26": ("https://sylvan.apple.com/itunes-assets/Aerials126/v4/"
                "c0/45/d9/c045d9d0-9606-1535-62fe-189edb4f79eb/resources-atv-23J-2.tar"),
     "macos26": "https://configuration.apple.com/configurations/internetservices/aerials/resources-config-26-0.plist",
+    "macos26.4.1": MAC + "resources-26-4-1.tar",
     "tvos16": BASE + "resources-16.tar",
     "tvos15": BASE + "resources-15.tar",
     "tvos13": BASE + "resources-13.tar",
@@ -143,9 +144,11 @@ def quality(key, url):
     s = urllib.parse.urlsplit(url).path.lower()
     if "hdr" in k or re.search(r"(?<![a-z])hdr(?![a-z])", s):
         return 1
+    if "720" in k or "720p" in s:
+        return 0
     if "1080" in k or "2k" in k or re.search(r"(?:1080p|2k_avc|2k_hevc)", s):
         return 5 if ("h264" in k or "avc" in k or "avc" in s) else 4
-    if "4k" in k or "uhd" in s:
+    if "4k" in k or "4k" in s or "uhd" in s:
         return 3
     return 2
 
@@ -200,7 +203,15 @@ def normalize(raw, translations, source):
 def _identity_keys(record):
     # IDs and complete media URLs are strong evidence. Do NOT merge by place,
     # title, approximate filename, duration or resolution alone.
-    return ({("id", x.casefold()) for x in record["apple_ids"]} |
+    # A complete production filename (without only the rendition suffix) is
+    # strong evidence across Apple CDN paths. Retain edit/version tokens.
+    names = set()
+    for url in record["versions"]:
+        stem = PurePosixPath(urllib.parse.unquote(urllib.parse.urlsplit(url).path)).stem.lower()
+        match = re.fullmatch(r"(.+?)_(?:sdr|hdr)_(?:2k|4k)_(?:avc|hevc)", stem)
+        if match and re.search(r"[a-z]\d{3}_c\d{3}", match.group(1)):
+            names.add(("master", match.group(1)))
+    return (names | {("id", x.casefold()) for x in record["apple_ids"]} |
             {("url", urllib.parse.urlsplit(u).netloc.lower() +
               urllib.parse.urlsplit(u).path) for u in record["versions"]})
 
@@ -233,11 +244,13 @@ def merge(records):
     return groups
 
 
-def inventory(previous=None, fetch=download):
+def inventory(previous=None, fetch=download, stop=None):
     """Sequential network requests; retain the last successful feed on failure."""
     previous = previous or {}
     snapshots, errors, counts = {}, {}, {}
     for name, url in FEEDS.items():
+        if stop is not None and stop.is_set():
+            raise InterruptedError("Apple catalog refresh stopped")
         try:
             raw, translations = load_feed(url, fetch)
             rows = list(normalize(raw, translations, name))
