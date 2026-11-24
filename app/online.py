@@ -1050,7 +1050,8 @@ def _refresh_apple_inventory(sources, attempted, stop=None):
         # fresh installation. Keep both provider keys for existing settings.
         rows, upgrades, conflicts = apple_reconcile.reconcile(
             report["items"], existing, _apple_extras(), allowed_video_url)
-        selected = online_library.selected_ids()
+        # Migrate existing ready markers before any file is removed.
+        online_library.selected_ids()
         history = read_json(PROCESSED_FILE)
         completed = set(history.get("ids", []))
         applied = 0
@@ -1143,6 +1144,11 @@ def _refresh_catalog_inner(force=False, stop: threading.Event | None = None) -> 
                     warm_cache() if stop is None else warm_cache(stop=stop)
                 continue
             clips = fetch()
+            if name == "apple_extras" and state.get("feed") == "apple-unified-v1":
+                # If the main source is disabled, keep its last reconciled extras.
+                combined = {r["id"]: r for r in clips}
+                combined.update({r["id"]: r for r in state.get("items", [])})
+                clips = list(combined.values())
             if not clips and name not in ARCHIVE_THEMES:
                 raise ValueError("Каталог пуст или не содержит подходящих MP4")
             state = {"updated": time.time(), "attempted": attempted,
@@ -1578,6 +1584,50 @@ def _download_archive_with_resume(opener, url: str, temp: Path,
     raise AssertionError("unreachable Archive retry state")
 
 
+def _download_apple_alternatives(entry, opener, temp, file_limit, combined, ident):
+    """Try approved equal-quality mirrors only; never silently downgrade a replacement."""
+    primary = entry["remote_url"]
+    versions = entry.get("apple_versions", {})
+    urls = [primary]
+    if isinstance(versions, dict) and primary in versions:
+        urls += [u for u in entry.get("alternate_urls", [])
+                 if u != primary and versions.get(u) == versions[primary]
+                 and allowed_video_url(u, entry["provider"])]
+    for index, url in enumerate(dict.fromkeys(urls)):
+        total = 0
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "PiAerial/0.3"})
+            with opener.open(req, timeout=18) as response, temp.open("xb") as file:
+                length = int(response.headers.get("Content-Length") or 0)
+                if length > file_limit:
+                    raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
+                video_progress.download("online", ident, 0, length or None)
+                while True:
+                    if combined.is_set():
+                        raise InterruptedError("Фоновая загрузка снята с выбора")
+                    buf = response.read(1024 * 256)
+                    if not buf:
+                        break
+                    total += len(buf)
+                    if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
+                        raise ValueError("Достигнут лимит видео или свободного места")
+                    file.write(buf)
+                    video_progress.download("online", ident, total, length or None)
+            with temp.open("rb") as file:
+                header = file.read(12)
+            if total < 1024 or header[4:8] != b"ftyp":
+                raise ValueError("Ответ сервера не содержит MP4/MOV")
+            return total
+        except InterruptedError:
+            raise
+        except (OSError, ValueError, http.client.HTTPException):
+            if index + 1 >= len(dict.fromkeys(urls)) or combined.is_set():
+                raise
+            temp.unlink(missing_ok=True)
+            print(f"[online] Apple mirror retry: {ident}", flush=True)
+    raise ValueError("No Apple video URL")
+
+
 def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                   stop: threading.Event | None = None) -> None:
     # Keep the acquired semaphore even if the module global is replaced.
@@ -1618,24 +1668,28 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                         opener, entry["remote_url"], temp,
                         file_limit, combined, ident)
                 else:
-                    req = urllib.request.Request(
-                        entry["remote_url"], headers={"User-Agent": "PiAerial/0.3"})
-                    with opener.open(req, timeout=18) as response, temp.open("xb") as file:
-                        length = int(response.headers.get("Content-Length") or 0)
-                        if length > file_limit:
-                            raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
-                        video_progress.download("online", ident, 0, length or None)
-                        while True:
-                            if combined.is_set():
-                                raise InterruptedError("Фоновая загрузка снята с выбора")
-                            buf = response.read(1024 * 256)
-                            if not buf:
-                                break
-                            total += len(buf)
-                            if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
-                                raise ValueError("Достигнут лимит видео или свободного места")
-                            file.write(buf)
-                            video_progress.download("online", ident, total, length or None)
+                    if provider in ("apple", "apple_extras") and entry.get("apple_versions"):
+                        total = _download_apple_alternatives(
+                            entry, opener, temp, file_limit, combined, ident)
+                    else:
+                        req = urllib.request.Request(
+                            entry["remote_url"], headers={"User-Agent": "PiAerial/0.3"})
+                        with opener.open(req, timeout=18) as response, temp.open("xb") as file:
+                            length = int(response.headers.get("Content-Length") or 0)
+                            if length > file_limit:
+                                raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
+                            video_progress.download("online", ident, 0, length or None)
+                            while True:
+                                if combined.is_set():
+                                    raise InterruptedError("Фоновая загрузка снята с выбора")
+                                buf = response.read(1024 * 256)
+                                if not buf:
+                                    break
+                                total += len(buf)
+                                if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
+                                    raise ValueError("Достигнут лимит видео или свободного места")
+                                file.write(buf)
+                                video_progress.download("online", ident, total, length or None)
                 if total < 1024:
                     raise ValueError("Пустой видеоролик")
                 with temp.open("rb") as f:
