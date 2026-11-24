@@ -28,7 +28,8 @@ def reconcile(groups, existing, extras, valid_url):
         matches = []
         for old in previous.values():
             record = {"apple_ids": old.get("apple_ids", []),
-                      "versions": {old["remote_url"]: 0, **old.get("apple_versions", {})}}
+                      "versions": {old["remote_url"]: 0, **old.get("apple_versions", {})},
+                      "shot_ids": old.get("apple_shot_ids", [])}
             if (old["id"] in aliases or keys & apple_catalog._identity_keys(record)):
                 matches.append(old)
         if len(matches) > 1:
@@ -63,6 +64,7 @@ def reconcile(groups, existing, extras, valid_url):
             item = {"id": ident, "provider": provider, "remote_url": url,
                     "credit": "Apple Aerial", "page": "https://www.apple.com/tv/"}
         item["apple_ids"] = list(dict.fromkeys(item.get("apple_ids", []) + group["apple_ids"]))
+        item["apple_shot_ids"] = list(dict.fromkeys(item.get("apple_shot_ids", []) + group.get("shot_ids", [])))
         item["apple_sources"] = list(dict.fromkeys(item.get("apple_sources", []) + group["sources"]))
         item["apple_versions"] = versions
         item["alternate_urls"] = [u for u in urls if u != url]
