@@ -193,6 +193,8 @@ def normalize(raw, translations, source):
                         captions[str(sec)] = caption
         yield {
             "apple_ids": [ident] if ident else [],
+            "shot_ids": [entry["shotID"]] if isinstance(entry.get("shotID"), str)
+                         and entry["shotID"].strip() else [],
             "sources": [source], "versions": versions,
             "name": ru.get(name_key) or en.get(name_key) or name,
             "name_en": en.get(name_key) or name,
@@ -211,7 +213,8 @@ def _identity_keys(record):
         match = re.fullmatch(r"(.+?)_(?:sdr|hdr)_(?:2k|4k)_(?:avc|hevc)", stem)
         if match and re.search(r"[a-z]\d{3}_c\d{3}", match.group(1)):
             names.add(("master", match.group(1)))
-    return (names | {("id", x.casefold()) for x in record["apple_ids"]} |
+    return (names | {("shot", x.casefold()) for x in record.get("shot_ids", [])} |
+            {("id", x.casefold()) for x in record["apple_ids"]} |
             {("url", urllib.parse.urlsplit(u).netloc.lower() +
               urllib.parse.urlsplit(u).path) for u in record["versions"]})
 
@@ -222,6 +225,7 @@ def merge(records):
     for original in records:
         item = {**original, "apple_ids": list(original["apple_ids"]),
                 "sources": list(original["sources"]),
+                "shot_ids": list(original.get("shot_ids", [])),
                 "versions": dict(original["versions"]),
                 "captions": dict(original["captions"])}
         keys = _identity_keys(item)
@@ -231,8 +235,8 @@ def merge(records):
             continue
         target = groups[matches[0]]
         for other in [item] + [groups[i] for i in matches[1:]]:
-            for field in ("apple_ids", "sources"):
-                target[field] = list(dict.fromkeys(target[field] + other[field]))
+            for field in ("apple_ids", "sources", "shot_ids"):
+                target[field] = list(dict.fromkeys(target[field] + other.get(field, [])))
             for url, rank in other["versions"].items():
                 target["versions"][url] = max(rank, target["versions"].get(url, 0))
             for sec, caption in other["captions"].items():
