@@ -53,7 +53,11 @@ def reconcile(groups, existing, extras, valid_url):
         if old:
             ident = old["id"]
             url = old["remote_url"]
-            if versions[best] > old_rank:
+            # A higher compatibility rank is not proof of better pixels.
+            # Only replace demonstrably sub-target resolution or an HDR-only
+            # source with a known SDR source for our 1080p SDR output.
+            # Do not mass-replace existing 1080p/4K SDR or unknown renditions.
+            if old_rank in (0, 1) and versions[best] >= 3:
                 upgrades[ident] = best
             # Do not change the primary until the caller can safely invalidate.
             item = dict(old)
