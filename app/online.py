@@ -32,7 +32,7 @@ import certifi
 
 from .storage import DATA, atomic_json, read_json, settings, max_online_cache_gb
 from .video_conversion import normalize_video
-from . import apple_extras, video_progress
+from . import apple_catalog, apple_extras, apple_reconcile, video_progress
 
 ARCHIVE_THEMES = {
     "ia_nature": ("Internet Archive · Природа",
@@ -347,7 +347,8 @@ def source_status() -> list[dict]:
                     if "accepted_ids" in state.get("scan", {})
                     else min(state.get("scan", {}).get("accepted", 0),
                              len(visible))
-            } if provider in ARCHIVE_THEMES or provider == "nasa" else {}),
+            } if provider in ARCHIVE_THEMES or provider == "nasa" else
+                     state.get("scan", {}) if provider == "apple" else {}),
         })
     return out
 
@@ -1028,8 +1029,74 @@ def _archive_theme(provider: str) -> list[dict]:
     return results
 
 
+def _apple_combined():
+    """Marker fetcher: refresh both legacy Apple groups in one inventory."""
+    raise AssertionError("Apple inventory requires catalog reconciliation")
+
+
+def _refresh_apple_inventory(sources, attempted, stop=None):
+    from . import online_library
+    old_state = sources.get("apple", {})
+    report = apple_catalog.inventory(old_state.get("apple_snapshots"), stop=stop)
+    if not report["items"]:
+        raise ValueError("Все каталоги Apple пусты или недоступны")
+    with LOCK:
+        existing = [row for provider in ("apple", "apple_extras")
+                    for row in sources.get(provider, {}).get("items", [])
+                    if isinstance(row, dict) and isinstance(row.get("id"), str)
+                    and re.fullmatch(r"[0-9a-f]{24}", row["id"])
+                    and allowed_video_url(row.get("remote_url"), provider)]
+        # The bundled additions preserve previously published IDs even on a
+        # fresh installation. Keep both provider keys for existing settings.
+        rows, upgrades, conflicts = apple_reconcile.reconcile(
+            report["items"], existing, _apple_extras(), allowed_video_url)
+        selected = online_library.selected_ids()
+        history = read_json(PROCESSED_FILE)
+        completed = set(history.get("ids", []))
+        applied = 0
+        for row in rows:
+            ident = row["id"]
+            better = upgrades.get(ident)
+            if not better or online_library.is_excluded(row):
+                continue
+            if ident in ACTIVE or online_library._one_shot_using(ident):
+                continue
+            if not online_library._delete_cache_files(ident):
+                continue
+            # The existing selected ID stays in the selection journal. Remove
+            # only its prepared marker/history; the usual worker requeues it.
+            completed.discard(ident)
+            CACHE_FAILED_UNTIL.pop(ident, None)
+            CACHE_FAILED_REASONS.pop(ident, None)
+            old_url = row["remote_url"]
+            row["remote_url"] = better
+            row["alternate_urls"] = list(dict.fromkeys(
+                [u for u in row["alternate_urls"] if u != better] + [old_url]))
+            applied += 1
+        if applied:
+            history["ids"] = sorted(completed)
+            atomic_json(PROCESSED_FILE, history)
+        stats = {"catalogs": len(report["counts"]),
+                 "counts": report["counts"], "records": report["records"],
+                 "unique": len(rows), "merged": report["merged"],
+                 "errors": report["errors"], "conflicts": conflicts,
+                 "upgrades": applied,
+                 "pending_upgrades": len(upgrades) - applied,
+                 "new": len({r["id"] for r in rows} - {r["id"] for r in existing})}
+        updated = time.time()
+        sources["apple"] = {"updated": updated, "attempted": attempted,
+                            "items": [r for r in rows if r["provider"] == "apple"],
+                            "error": None, "feed": "apple-unified-v1",
+                            "apple_snapshots": report["snapshots"], "scan": stats}
+        sources["apple_extras"] = {"updated": updated, "attempted": attempted,
+                                   "items": [r for r in rows if r["provider"] == "apple_extras"],
+                                   "error": None, "feed": "apple-unified-v1"}
+        atomic_json(CATALOG_FILE, {"sources": sources})
+    print(f"[online] Apple inventory: {json.dumps(stats, ensure_ascii=False)}", flush=True)
+
+
 FETCHERS = {
-    "apple": _apple, "apple_extras": _apple_extras, "nasa": _nasa, "robin": _robin,
+    "apple": _apple_combined, "apple_extras": _apple_extras, "nasa": _nasa, "robin": _robin,
     **{provider: (lambda provider=provider: _archive_theme(provider))
        for provider in ARCHIVE_THEMES},
 }
@@ -1056,15 +1123,25 @@ def _refresh_catalog_inner(force=False, stop: threading.Event | None = None) -> 
             break
         if not cfg["online_sources"].get(name, False):
             continue
+        if (name == "apple_extras" and cfg["online_sources"].get("apple")
+                and FETCHERS.get("apple") is _apple_combined):
+            continue  # Both Apple groups are refreshed together.
         state = dict(sources.get(name, {}))
         last_attempt = float(state.get("attempted") or state.get("updated") or 0)
         # Force a first refresh when switching from legacy tvOS 11 to tvOS 26.
-        outdated_apple = name == "apple" and state.get("feed") != "tvos26"
+        outdated_apple = name == "apple" and state.get("feed") != (
+            "apple-unified-v1" if fetch is _apple_combined else "tvos26")
         elapsed = time.time() - last_attempt
         if elapsed < (60 if force or outdated_apple else interval_seconds):
             continue
         attempted = time.time()
         try:
+            if fetch is _apple_combined:
+                _refresh_apple_inventory(sources, attempted, stop)
+                changed = True
+                if stop is None or not stop.is_set():
+                    warm_cache() if stop is None else warm_cache(stop=stop)
+                continue
             clips = fetch()
             if not clips and name not in ARCHIVE_THEMES:
                 raise ValueError("Каталог пуст или не содержит подходящих MP4")
