@@ -16,6 +16,7 @@ def reconcile(groups, existing, extras, valid_url):
     ambiguous migration rather than losing a user's selection or blacklist.
     """
     previous = {row["id"]: row for row in existing}
+    published_ids = set(previous)
     for row in extras:
         previous.setdefault(row["id"], row)
     result = dict(previous)
@@ -32,10 +33,16 @@ def reconcile(groups, existing, extras, valid_url):
                       "shot_ids": old.get("apple_shot_ids", [])}
             if (old["id"] in aliases or keys & apple_catalog._identity_keys(record)):
                 matches.append(old)
-        if len(matches) > 1:
+        published = [old for old in matches if old["id"] in published_ids]
+        if len(published) > 1:
             conflicts += 1
             continue
-        old = matches[0] if matches else None
+        old = published[0] if published else (matches[0] if matches else None)
+        # A bundled fallback is not a second published clip. If a real entry
+        # already represents it, omit the redundant proposal, not any file.
+        for redundant in matches:
+            if redundant is not old and redundant["id"] not in published_ids:
+                result.pop(redundant["id"], None)
         provider = old["provider"] if old else "apple"
         versions = {u: rank for u, rank in group["versions"].items()
                     if valid_url(u, provider)}
@@ -68,6 +75,7 @@ def reconcile(groups, existing, extras, valid_url):
             item = {"id": ident, "provider": provider, "remote_url": url,
                     "credit": "Apple Aerial", "page": "https://www.apple.com/tv/"}
         item["apple_ids"] = list(dict.fromkeys(item.get("apple_ids", []) + group["apple_ids"]))
+        item["apple_alias_ids"] = sorted(aliases | {ident} | set(item.get("apple_alias_ids", [])))
         item["apple_shot_ids"] = list(dict.fromkeys(item.get("apple_shot_ids", []) + group.get("shot_ids", [])))
         item["apple_sources"] = list(dict.fromkeys(item.get("apple_sources", []) + group["sources"]))
         item["apple_versions"] = versions
