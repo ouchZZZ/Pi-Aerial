@@ -87,3 +87,40 @@ def test_failed_feed_retains_snapshot():
     assert result["unique"] == 2
     assert result["errors"] == {"bad": "offline"}
     assert result["snapshots"]["bad"] == previous["bad"]
+
+
+def test_legacy_batch_with_id_does_not_merge_distinct_clips():
+    raw = [{"id": "batch", "assets": [row("one", A), row("two", C)]}]
+    assert len(catalog.merge(records(raw))) == 2
+
+
+def test_openstep_localization():
+    raw = r'"NAME" = "\U0413\U043E\U0440\U043E\U0434";'.encode()
+    assert catalog._read_strings(raw)["NAME"] == "Город"
+
+
+def test_raw_count_and_skipped_entries():
+    good = catalog.BASE + "good.json"
+    data = json.dumps([row("one", A), {"id": "still", "previewImage": C}]).encode()
+    with patch.object(catalog, "FEEDS", {"good": good}):
+        report = catalog.inventory(fetch=lambda _: data)
+    assert report["raw_counts"] == {"good": 2}
+    assert report["counts"] == {"good": 1}
+    assert report["skipped"] == {"good": 1}
+
+
+def test_same_tar_requested_once_per_inventory():
+    config = "https://configuration.apple.com/example.plist"
+    target = catalog.BASE + "example.tar"
+    calls = []
+    data = {config: plistlib.dumps({"resources-url": target}),
+            target: make_tar([row("one", A)])}
+
+    def fetch(url):
+        calls.append(url)
+        return data[url]
+
+    with patch.object(catalog, "FEEDS", {"dynamic": config, "static": target}):
+        report = catalog.inventory(fetch=fetch)
+    assert calls.count(target) == 1
+    assert report["unique"] == 1
