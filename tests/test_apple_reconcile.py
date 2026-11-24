@@ -126,3 +126,23 @@ def test_codec_preference_does_not_delete_good_existing_video():
             [group()], [old], [], online.allowed_video_url)
         assert not upgrades
         assert rows[0]["remote_url"] == url
+
+
+def test_bundled_alias_does_not_create_second_proposal():
+    old = old_clip()
+    extra = old_clip(provider="apple_extras")
+    rows, _, conflicts = apple_reconcile.reconcile(
+        [group()], [old], [extra], online.allowed_video_url)
+    assert [r["id"] for r in rows] == [old["id"]]
+    assert conflicts == 0
+
+
+def test_historical_exclusion_alias_is_preserved(monkeypatch, tmp_path):
+    sources, ident = setup_refresh(monkeypatch, tmp_path)
+    alias = old_clip(provider="apple_extras")["id"]
+    online.atomic_json(online_library.EXCLUDED_FILE, {"version": 1, "entries": {
+        alias: {"id": alias, "provider": "apple_extras", "name": "Previously hidden"}}})
+    online._refresh_apple_inventory(sources, 10)
+    assert ident in online_library.excluded_keys()
+    assert ident not in online_library.selected_ids()
+    assert sources["apple"]["items"][0]["remote_url"] == LOW
