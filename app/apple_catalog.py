@@ -180,7 +180,7 @@ def quality(key, url):
     return 2
 
 
-def normalize(raw, translations, source):
+def asset_entries(raw):
     entries = raw if isinstance(raw, list) else raw.get("assets", raw.get("entries", []))
     if not isinstance(entries, list):
         raise ValueError("Invalid Apple asset list")
@@ -190,9 +190,16 @@ def normalize(raw, translations, source):
         if not isinstance(entry, dict):
             continue
         children = entry.get("assets")
-        if isinstance(children, list) and not entry.get("id"):
+        if isinstance(children, list) and (not entry.get("id") or
+                any(isinstance(child, dict) and child.get("id") for child in children)):
             queue.extend(children)
             continue
+        yield entry
+
+
+def normalize(raw, translations, source):
+    for entry in asset_entries(raw):
+        children = entry.get("assets")
         versions = {}
         for obj in [entry] + (children if isinstance(children, list) else []):
             if not isinstance(obj, dict):
@@ -223,6 +230,7 @@ def normalize(raw, translations, source):
             "shot_ids": [entry["shotID"]] if isinstance(entry.get("shotID"), str)
                          and entry["shotID"].strip() else [],
             "sources": [source], "versions": versions,
+            "localized_ru": bool(ru.get(name_key)),
             "name": ru.get(name_key) or en.get(name_key) or name,
             "name_en": en.get(name_key) or name,
             "captions": captions,
@@ -266,6 +274,9 @@ def merge(records):
                 target[field] = list(dict.fromkeys(target[field] + other.get(field, [])))
             for url, rank in other["versions"].items():
                 target["versions"][url] = max(rank, target["versions"].get(url, 0))
+            if other.get("localized_ru") and not target.get("localized_ru"):
+                target["name"] = other["name"]
+                target["localized_ru"] = True
             for sec, caption in other["captions"].items():
                 target["captions"].setdefault(sec, caption)
         for i in reversed(matches[1:]):
@@ -278,14 +289,16 @@ def merge(records):
 def inventory(previous=None, fetch=download, stop=None):
     """Sequential network requests; retain the last successful feed on failure."""
     previous = previous or {}
-    snapshots, errors, counts = {}, {}, {}
+    snapshots, errors, counts, raw_counts, skipped = {}, {}, {}, {}, {}
     memo = {}
     for name, url in FEEDS.items():
         if stop is not None and stop.is_set():
             raise InterruptedError("Apple catalog refresh stopped")
         try:
             raw, translations = load_feed(url, fetch, memo)
+            raw_counts[name] = sum(1 for _ in asset_entries(raw))
             rows = list(normalize(raw, translations, name))
+            skipped[name] = raw_counts[name] - len(rows)
             if not rows:
                 raise ValueError("No playable Apple assets")
             snapshots[name] = rows
@@ -297,5 +310,6 @@ def inventory(previous=None, fetch=download, stop=None):
     records = [row for rows in snapshots.values() for row in rows]
     groups = merge(records)
     return {"snapshots": snapshots, "items": groups, "counts": counts,
-            "errors": errors, "records": len(records),
+            "errors": errors, "raw_counts": raw_counts, "skipped": skipped,
+            "records": len(records),
             "unique": len(groups), "merged": len(records) - len(groups)}
