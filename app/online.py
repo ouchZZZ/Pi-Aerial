@@ -32,7 +32,7 @@ import certifi
 
 from .storage import DATA, atomic_json, read_json, settings, max_online_cache_gb
 from .video_conversion import normalize_video
-from . import apple_extras, video_progress
+from . import apple_catalog, apple_extras, apple_reconcile, video_progress
 
 ARCHIVE_THEMES = {
     "ia_nature": ("Internet Archive · Природа",
@@ -347,7 +347,8 @@ def source_status() -> list[dict]:
                     if "accepted_ids" in state.get("scan", {})
                     else min(state.get("scan", {}).get("accepted", 0),
                              len(visible))
-            } if provider in ARCHIVE_THEMES or provider == "nasa" else {}),
+            } if provider in ARCHIVE_THEMES or provider == "nasa" else
+                     state.get("scan", {}) if provider == "apple" else {}),
         })
     return out
 
@@ -1028,8 +1029,105 @@ def _archive_theme(provider: str) -> list[dict]:
     return results
 
 
+def _apple_combined():
+    """Marker fetcher: refresh both legacy Apple groups in one inventory."""
+    raise AssertionError("Apple inventory requires catalog reconciliation")
+
+
+def _refresh_apple_inventory(sources, attempted, stop=None):
+    from . import online_library
+    old_state = sources.get("apple", {})
+    report = apple_catalog.inventory(old_state.get("apple_snapshots"), stop=stop)
+    if not report["items"]:
+        raise ValueError("Все каталоги Apple пусты или недоступны")
+    with LOCK:
+        existing = [row for provider in ("apple", "apple_extras")
+                    for row in sources.get(provider, {}).get("items", [])
+                    if isinstance(row, dict) and isinstance(row.get("id"), str)
+                    and re.fullmatch(r"[0-9a-f]{24}", row["id"])
+                    and allowed_video_url(row.get("remote_url"), provider)]
+        # The bundled additions preserve previously published IDs even on a
+        # fresh installation. Keep both provider keys for existing settings.
+        rows, upgrades, conflicts = apple_reconcile.reconcile(
+            report["items"], existing, _apple_extras(), allowed_video_url)
+        # Migrate existing ready markers before any file is removed.
+        selected = online_library.selected_ids()
+        # Migrate selections/blacklists for aliases that no longer have a
+        # catalog row. An exclusion always takes precedence over selection.
+        published = {r["id"] for r in existing}
+        excluded = online_library._excluded_state()
+        selection_changed = exclusion_changed = False
+        for row in rows:
+            ident = row["id"]
+            aliases = set(row.get("apple_alias_ids", [])) - published - {ident}
+            blocked = sorted(aliases & set(excluded))
+            chosen = aliases & selected
+            if blocked:
+                excluded.setdefault(ident, {"id": ident, **online_library._metadata(row)})
+                for alias in blocked:
+                    excluded.pop(alias, None)
+                exclusion_changed = True
+            if chosen or (ident in excluded and ident in selected):
+                selected.difference_update(chosen)
+                if ident in excluded:
+                    selected.discard(ident)
+                    event = CANCEL_EVENTS.get(ident)
+                    if event is not None:
+                        event.set()
+                elif chosen:
+                    selected.add(ident)
+                selection_changed = True
+        if exclusion_changed:
+            atomic_json(online_library.EXCLUDED_FILE, {"version": 1, "entries": excluded})
+        if selection_changed:
+            atomic_json(online_library.SELECTION_FILE, {"version": 1, "ids": sorted(selected)})
+        history = read_json(PROCESSED_FILE)
+        completed = set(history.get("ids", []))
+        applied = 0
+        for row in rows:
+            ident = row["id"]
+            better = upgrades.get(ident)
+            if not better or online_library.is_excluded(row):
+                continue
+            if ident in ACTIVE or online_library._one_shot_using(ident):
+                continue
+            if not online_library._delete_cache_files(ident):
+                continue
+            # The existing selected ID stays in the selection journal. Remove
+            # only its prepared marker/history; the usual worker requeues it.
+            completed.discard(ident)
+            CACHE_FAILED_UNTIL.pop(ident, None)
+            CACHE_FAILED_REASONS.pop(ident, None)
+            old_url = row["remote_url"]
+            row["remote_url"] = better
+            row["alternate_urls"] = list(dict.fromkeys(
+                [u for u in row["alternate_urls"] if u != better] + [old_url]))
+            applied += 1
+        if applied:
+            history["ids"] = sorted(completed)
+            atomic_json(PROCESSED_FILE, history)
+        stats = {"catalogs": len(report["counts"]),
+                 "counts": report["counts"], "raw_counts": report.get("raw_counts", {}),
+                 "skipped": report.get("skipped", {}), "records": report["records"],
+                 "unique": len(rows), "merged": report["merged"],
+                 "errors": report["errors"], "conflicts": conflicts,
+                 "upgrades": applied,
+                 "pending_upgrades": len(upgrades) - applied,
+                 "new": len({r["id"] for r in rows} - {r["id"] for r in existing})}
+        updated = time.time()
+        sources["apple"] = {"updated": updated, "attempted": attempted,
+                            "items": [r for r in rows if r["provider"] == "apple"],
+                            "error": None, "feed": "apple-unified-v1",
+                            "apple_snapshots": report["snapshots"], "scan": stats}
+        sources["apple_extras"] = {"updated": updated, "attempted": attempted,
+                                   "items": [r for r in rows if r["provider"] == "apple_extras"],
+                                   "error": None, "feed": "apple-unified-v1"}
+        atomic_json(CATALOG_FILE, {"sources": sources})
+    print(f"[online] Apple inventory: {json.dumps(stats, ensure_ascii=False)}", flush=True)
+
+
 FETCHERS = {
-    "apple": _apple, "apple_extras": _apple_extras, "nasa": _nasa, "robin": _robin,
+    "apple": _apple_combined, "apple_extras": _apple_extras, "nasa": _nasa, "robin": _robin,
     **{provider: (lambda provider=provider: _archive_theme(provider))
        for provider in ARCHIVE_THEMES},
 }
@@ -1056,21 +1154,38 @@ def _refresh_catalog_inner(force=False, stop: threading.Event | None = None) -> 
             break
         if not cfg["online_sources"].get(name, False):
             continue
+        if (name == "apple_extras" and cfg["online_sources"].get("apple")
+                and FETCHERS.get("apple") is _apple_combined):
+            continue  # Both Apple groups are refreshed together.
         state = dict(sources.get(name, {}))
         last_attempt = float(state.get("attempted") or state.get("updated") or 0)
         # Force a first refresh when switching from legacy tvOS 11 to tvOS 26.
-        outdated_apple = name == "apple" and state.get("feed") != "tvos26"
+        outdated_apple = name == "apple" and state.get("feed") != (
+            "apple-unified-v1" if fetch is _apple_combined else "tvos26")
         elapsed = time.time() - last_attempt
         if elapsed < (60 if force or outdated_apple else interval_seconds):
             continue
         attempted = time.time()
         try:
+            if fetch is _apple_combined:
+                _refresh_apple_inventory(sources, attempted, stop)
+                changed = True
+                if stop is None or not stop.is_set():
+                    warm_cache() if stop is None else warm_cache(stop=stop)
+                continue
             clips = fetch()
+            if name == "apple_extras" and state.get("feed") == "apple-unified-v1":
+                # If the main source is disabled, keep its last reconciled extras.
+                combined = {r["id"]: r for r in clips}
+                combined.update({r["id"]: r for r in state.get("items", [])})
+                clips = list(combined.values())
             if not clips and name not in ARCHIVE_THEMES:
                 raise ValueError("Каталог пуст или не содержит подходящих MP4")
             state = {"updated": time.time(), "attempted": attempted,
                      "items": clips, "error": None,
                      "feed": {"apple": "tvos26", "nasa": "nasa", "robin": "aerialshots"}.get(name, name)}
+            if name == "apple_extras" and sources.get(name, {}).get("feed") == "apple-unified-v1":
+                state["feed"] = "apple-unified-v1"
             if name == "nasa":
                 # A rotating NASA search must not lose existing selections.
                 from . import online_library
@@ -1501,6 +1616,50 @@ def _download_archive_with_resume(opener, url: str, temp: Path,
     raise AssertionError("unreachable Archive retry state")
 
 
+def _download_apple_alternatives(entry, opener, temp, file_limit, combined, ident):
+    """Try approved equal-quality mirrors only; never silently downgrade a replacement."""
+    primary = entry["remote_url"]
+    versions = entry.get("apple_versions", {})
+    urls = [primary]
+    if isinstance(versions, dict) and primary in versions:
+        urls += [u for u in entry.get("alternate_urls", [])
+                 if u != primary and versions.get(u) == versions[primary]
+                 and allowed_video_url(u, entry["provider"])]
+    for index, url in enumerate(dict.fromkeys(urls)):
+        total = 0
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "PiAerial/0.3"})
+            with opener.open(req, timeout=18) as response, temp.open("xb") as file:
+                length = int(response.headers.get("Content-Length") or 0)
+                if length > file_limit:
+                    raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
+                video_progress.download("online", ident, 0, length or None)
+                while True:
+                    if combined.is_set():
+                        raise InterruptedError("Фоновая загрузка снята с выбора")
+                    buf = response.read(1024 * 256)
+                    if not buf:
+                        break
+                    total += len(buf)
+                    if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
+                        raise ValueError("Достигнут лимит видео или свободного места")
+                    file.write(buf)
+                    video_progress.download("online", ident, total, length or None)
+            with temp.open("rb") as file:
+                header = file.read(12)
+            if total < 1024 or header[4:8] != b"ftyp":
+                raise ValueError("Ответ сервера не содержит MP4/MOV")
+            return total
+        except InterruptedError:
+            raise
+        except (OSError, ValueError, http.client.HTTPException):
+            if index + 1 >= len(dict.fromkeys(urls)) or combined.is_set():
+                raise
+            temp.unlink(missing_ok=True)
+            print(f"[online] Apple mirror retry: {ident}", flush=True)
+    raise ValueError("No Apple video URL")
+
+
 def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                   stop: threading.Event | None = None) -> None:
     # Keep the acquired semaphore even if the module global is replaced.
@@ -1541,24 +1700,28 @@ def _cache_worker(entry: dict, slot: threading.BoundedSemaphore | None = None,
                         opener, entry["remote_url"], temp,
                         file_limit, combined, ident)
                 else:
-                    req = urllib.request.Request(
-                        entry["remote_url"], headers={"User-Agent": "PiAerial/0.3"})
-                    with opener.open(req, timeout=18) as response, temp.open("xb") as file:
-                        length = int(response.headers.get("Content-Length") or 0)
-                        if length > file_limit:
-                            raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
-                        video_progress.download("online", ident, 0, length or None)
-                        while True:
-                            if combined.is_set():
-                                raise InterruptedError("Фоновая загрузка снята с выбора")
-                            buf = response.read(1024 * 256)
-                            if not buf:
-                                break
-                            total += len(buf)
-                            if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
-                                raise ValueError("Достигнут лимит видео или свободного места")
-                            file.write(buf)
-                            video_progress.download("online", ident, total, length or None)
+                    if provider in ("apple", "apple_extras") and entry.get("apple_versions"):
+                        total = _download_apple_alternatives(
+                            entry, opener, temp, file_limit, combined, ident)
+                    else:
+                        req = urllib.request.Request(
+                            entry["remote_url"], headers={"User-Agent": "PiAerial/0.3"})
+                        with opener.open(req, timeout=18) as response, temp.open("xb") as file:
+                            length = int(response.headers.get("Content-Length") or 0)
+                            if length > file_limit:
+                                raise ValueError("Размер ролика превышает 50% свободной квоты кеша")
+                            video_progress.download("online", ident, 0, length or None)
+                            while True:
+                                if combined.is_set():
+                                    raise InterruptedError("Фоновая загрузка снята с выбора")
+                                buf = response.read(1024 * 256)
+                                if not buf:
+                                    break
+                                total += len(buf)
+                                if total > file_limit or shutil.disk_usage(CACHE_FOLDER).free < RESERVE_BYTES:
+                                    raise ValueError("Достигнут лимит видео или свободного места")
+                                file.write(buf)
+                                video_progress.download("online", ident, total, length or None)
                 if total < 1024:
                     raise ValueError("Пустой видеоролик")
                 with temp.open("rb") as f:
