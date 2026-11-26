@@ -284,6 +284,7 @@ def _identity_keys(record):
 def merge(records):
     """Union transitive strong matches, retaining the first record's metadata."""
     groups = []
+    group_keys = []
     for original in records:
         item = {**original, "apple_ids": list(original["apple_ids"]),
                 "sources": list(original["sources"]),
@@ -291,9 +292,10 @@ def merge(records):
                 "versions": dict(original["versions"]),
                 "captions": dict(original["captions"])}
         keys = _identity_keys(item)
-        matches = [i for i, group in enumerate(groups) if keys & _identity_keys(group)]
+        matches = [i for i, cached in enumerate(group_keys) if keys & cached]
         if not matches:
             groups.append(item)
+            group_keys.append(keys)
             continue
         target = groups[matches[0]]
         for other in [item] + [groups[i] for i in matches[1:]]:
@@ -306,8 +308,12 @@ def merge(records):
                 target["localized_ru"] = True
             for sec, caption in other["captions"].items():
                 target["captions"].setdefault(sec, caption)
+        # Recompute only the changed group: inferred shot keys can disappear
+        # after merging explicit or inconsistent scene identifiers.
+        group_keys[matches[0]] = _identity_keys(target)
         for i in reversed(matches[1:]):
             groups.pop(i)
+            group_keys.pop(i)
     for item in groups:
         item["urls"] = sorted(item["versions"], key=lambda u: (-item["versions"][u], u))
     return groups
