@@ -92,6 +92,7 @@ SOURCE_URLS = {
     "nasa": "https://images-api.nasa.gov/search",
     "robin": "https://raw.githubusercontent.com/RobinFrcd/AerialShots/master/entries.json",
 }
+APPLE_INVENTORY_FEED = "apple-unified-v2"
 CATALOG_FILE = DATA / "online_catalog.json"
 PROCESSED_FILE = DATA / "online_processed.json"
 SCHEDULER_FILE = DATA / "online_scheduler.json"
@@ -1144,7 +1145,7 @@ def _refresh_apple_inventory(sources, attempted, stop=None):
         updated = time.time()
         sources["apple"] = {"updated": updated, "attempted": attempted,
                             "items": [r for r in rows if r["provider"] == "apple"],
-                            "error": None, "feed": "apple-unified-v2",
+                            "error": None, "feed": APPLE_INVENTORY_FEED,
                             "apple_snapshots": report["snapshots"], "scan": stats}
         sources["apple_extras"] = {"updated": updated, "attempted": attempted,
                                    "items": [r for r in rows if r["provider"] == "apple_extras"],
@@ -1188,7 +1189,7 @@ def _refresh_catalog_inner(force=False, stop: threading.Event | None = None) -> 
         last_attempt = float(state.get("attempted") or state.get("updated") or 0)
         # Force a first refresh when switching from legacy tvOS 11 to tvOS 26.
         outdated_apple = name == "apple" and state.get("feed") != (
-            "apple-unified-v1" if fetch is _apple_combined else "tvos26")
+            APPLE_INVENTORY_FEED if fetch is _apple_combined else "tvos26")
         elapsed = time.time() - last_attempt
         if elapsed < (60 if force or outdated_apple else interval_seconds):
             continue
