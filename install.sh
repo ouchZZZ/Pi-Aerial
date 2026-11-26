@@ -112,10 +112,10 @@ cat > "$BASE/kiosk.sh" <<'KIOSK'
 #!/usr/bin/env bash
 set -u
 command -v chromium >/dev/null && BROWSER=chromium || BROWSER=chromium-browser
-# PI_AERIAL_SOFTWARE_VIDEO_DECODE_V1
-# Touch data/allow-hardware-video-decode and restart kiosk to opt back in.
+# PI_AERIAL_HARDWARE_VIDEO_DECODE_V2
+# Touch data/force-software-video-decode and restart kiosk if hardware decoding is unstable.
 VIDEO_DECODE_FLAGS=()
-if [[ ! -e "$(dirname -- "${BASH_SOURCE[0]}")/data/allow-hardware-video-decode" ]]; then
+if [[ -e "$(dirname -- "${BASH_SOURCE[0]}")/data/force-software-video-decode" ]]; then
   VIDEO_DECODE_FLAGS=(--disable-accelerated-video-decode)
 fi
 while true; do

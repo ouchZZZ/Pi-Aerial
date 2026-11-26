@@ -1644,3 +1644,29 @@ def test_nasa_and_archive_search_never_use_more_than_two_metadata_workers(
         online._nasa()
     assert online._archive_theme("ia_nature") == []
     assert requested_workers == [2, 2]
+
+
+def test_current_apple_inventory_uses_configured_refresh_interval(monkeypatch, tmp_path):
+    clock = [1_000_000.0]
+    calls = []
+    monkeypatch.setattr(online, "CATALOG_FILE", tmp_path / "catalog.json")
+    monkeypatch.setattr(online, "settings", lambda: {"online_sources": {"apple": True},
+                        "online_refresh_interval_minutes": 60})
+    monkeypatch.setattr(online, "FETCHERS", {"apple": online._apple_combined})
+    monkeypatch.setattr(online, "warm_cache", lambda: None)
+    monkeypatch.setattr(online.time, "time", lambda: clock[0])
+
+    def refresh(sources, attempted, stop=None):
+        calls.append(attempted)
+        sources["apple"] = {"feed": "apple-unified-v2", "attempted": attempted,
+                            "updated": clock[0], "items": []}
+        online.atomic_json(online.CATALOG_FILE, {"sources": sources})
+
+    monkeypatch.setattr(online, "_refresh_apple_inventory", refresh)
+    online.refresh_catalog()
+    clock[0] += 61
+    online.refresh_catalog()
+    assert len(calls) == 1
+    clock[0] += 3539
+    online.refresh_catalog()
+    assert len(calls) == 2
