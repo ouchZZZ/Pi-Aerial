@@ -124,3 +124,10 @@ def test_same_tar_requested_once_per_inventory():
         report = catalog.inventory(fetch=fetch)
     assert calls.count(target) == 1
     assert report["unique"] == 1
+
+
+def test_merge_does_not_recompute_unchanged_group_keys():
+    rows = records([row(str(i), BASE + f"scene{i}_SDR_2K_AVC.mov") for i in range(150)])
+    with patch.object(catalog, "_identity_keys", wraps=catalog._identity_keys) as keys:
+        assert len(catalog.merge(rows)) == len(rows)
+        assert keys.call_count == len(rows)
