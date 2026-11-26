@@ -41,8 +41,8 @@ async def lifespan(_: FastAPI):
     # A core update does not replace the stable kiosk.sh. Migrate it once.
     # The running Chromium process gets the new flag at the next kiosk launch.
     try:
-        if kiosk.enable_software_video_decode(BASE / 'kiosk.sh'):
-            print('[kiosk] Chromium software video decoding configured; restart kiosk to apply.', flush=True)
+        if kiosk.enable_hardware_video_decode(BASE / 'kiosk.sh'):
+            print('[kiosk] Chromium hardware video decoding allowed; restart kiosk to apply.', flush=True)
     except OSError as exc:
         print(f'[kiosk] Cannot migrate launcher: {exc}', flush=True)
     # One-time, durable migration runs before any fresh source discovery.
